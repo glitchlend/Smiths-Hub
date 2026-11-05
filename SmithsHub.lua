@@ -1,37 +1,24 @@
 
---[[
-    SMITH'S HUB V14
-    github.com/glitchlend/Smiths-Hub
-
-    MOVEMENT
-      WalkSpeed
-      JumpPower
-      Acceleration Boost
-      Gear Speed Boost
-
-    AUTO FARM
-      Candy ESP
-      Auto Claw
-      Auto Collect (saved markers only)
-
-    LOGO
-      GitHub-hosted PNG
-      Temporary file, deleted after loading
-]]
+-- SMITH'S HUB V15
+-- github.com/glitchlend/Smiths-Hub
+-- Movement: Acceleration + Gear Speed
+-- Auto Farm: ESP + Auto Claw + Auto Collect
+-- Animated 3-second welcome screen
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RS = game:GetService("RunService")
+local TS = game:GetService("TweenService")
 local WS = game:GetService("Workspace")
 local CP = game:GetService("ContentProvider")
 local VIM = game:GetService("VirtualInputManager")
 
 local Player = Players.LocalPlayer
 local PG = Player:WaitForChild("PlayerGui")
-local Env = (getgenv and getgenv()) or _G
+local ENV = (getgenv and getgenv()) or _G
 
--- CLEANUP PREVIOUS VERSIONS
 for _, name in ipairs({
+    "SmithHubV15Unload",
     "SmithHubV14Unload",
     "SmithHubV13Unload",
     "SmithBoostV3Cleanup",
@@ -39,22 +26,17 @@ for _, name in ipairs({
     "SmithBoostCleanup",
     "YSOBoostCleanup"
 }) do
-    if type(Env[name]) == "function" then
-        pcall(Env[name])
+    if type(ENV[name]) == "function" then
+        pcall(ENV[name])
     end
 end
 
 local LOGO_URL =
     "https://raw.githubusercontent.com/glitchlend/Smiths-Hub/main/logo.png"
 
-local LOGO_TEMP_FILE = "SmithsHub_logo_temp.png"
+local TEMP_LOGO = "SmithsHub_Logo_Temp.png"
 
-local Config = {
-    WalkSpeed = 16,
-    JumpPower = 50,
-    WalkChanged = false,
-    JumpChanged = false,
-
+local C = {
     Acceleration = 1,
     GearSpeed = 1,
 
@@ -77,8 +59,9 @@ local Config = {
 local alive = true
 local connections = {}
 local session = nil
-
 local entries = {}
+local entryCounter = 0
+
 local visibleCount = 0
 local savedCount = 0
 
@@ -118,51 +101,25 @@ local function corner(obj,r)
     })
 end
 
+local function tween(obj,duration,props,style)
+    local info = TweenInfo.new(
+        duration,
+        style or Enum.EasingStyle.Quart,
+        Enum.EasingDirection.Out
+    )
+    local t = TS:Create(obj,info,props)
+    t:Play()
+    return t
+end
+
 local function getHumanoid()
-    local character = Player.Character
-    return character and
-        character:FindFirstChildOfClass("Humanoid")
+    local char = Player.Character
+    return char and
+        char:FindFirstChildOfClass("Humanoid")
 end
 
 -- =========================================
--- CHARACTER MOVEMENT
--- =========================================
-
-local originalHumanoids = setmetatable({},{
-    __mode="k"
-})
-
-local startingHumanoid = getHumanoid()
-
-if startingHumanoid then
-    Config.WalkSpeed = startingHumanoid.WalkSpeed
-    Config.JumpPower = startingHumanoid.JumpPower
-end
-
-local function applyMovement()
-    local hum = getHumanoid()
-    if not hum then return end
-
-    if not originalHumanoids[hum] then
-        originalHumanoids[hum] = {
-            WalkSpeed=hum.WalkSpeed,
-            JumpPower=hum.JumpPower,
-            UseJumpPower=hum.UseJumpPower
-        }
-    end
-
-    if Config.WalkChanged then
-        hum.WalkSpeed = Config.WalkSpeed
-    end
-
-    if Config.JumpChanged then
-        hum.UseJumpPower = true
-        hum.JumpPower = Config.JumpPower
-    end
-end
-
--- =========================================
--- VEHICLE ENGINE / GEAR BOOST
+-- VEHICLE BOOST
 -- =========================================
 
 local POWER_FIELDS = {
@@ -210,11 +167,9 @@ local function findVehicle()
 
     while node and node ~= WS do
         local module = node:FindFirstChild("A-Chassis Tune")
-
         if module and module:IsA("ModuleScript") then
             return node,seat,module
         end
-
         node = node.Parent
     end
 
@@ -252,7 +207,6 @@ end
 
 local function loadVehicle(car,seat,module)
     local values = chassisValues(car)
-
     if not values then return false end
 
     local ok,tune = pcall(require,module)
@@ -301,7 +255,6 @@ local function loadVehicle(car,seat,module)
         power=power,
         speedLimit=tune.SpeedLimit,
         firstGearIndex=neutralIndex+1,
-        gearCount=#ratios-neutralIndex,
         currentPower=1
     }
 
@@ -329,7 +282,7 @@ local function updateVehicle(s,dt)
         and brake < 0.1
 
     local desired =
-        accelerating and Config.Acceleration or 1
+        accelerating and C.Acceleration or 1
 
     local response = math.clamp(dt*8,0,1)
 
@@ -345,26 +298,26 @@ local function updateVehicle(s,dt)
         end
     end
 
-    -- Scale every forward gear equally
+    -- All forward gears scale equally
     for i=s.firstGearIndex,#s.ratios do
         local original = s.ratios[i]
 
         if type(original) == "number" then
             s.tune.Ratios[i] =
-                original/Config.GearSpeed
+                original/C.GearSpeed
         end
     end
 
     if type(s.speedLimit) == "number" then
         s.tune.SpeedLimit =
             s.speedLimit > 0
-            and s.speedLimit*Config.GearSpeed
+            and s.speedLimit*C.GearSpeed
             or s.speedLimit
     end
 end
 
 -- =========================================
--- CANDY ESP / SAVED MARKERS
+-- CANDY ESP
 -- =========================================
 
 local function getCandyFolders()
@@ -373,7 +326,6 @@ local function getCandyFolders()
         and events:FindFirstChild("Halloween 2026")
 
     local folders = {}
-
     if not halloween then return folders end
 
     for _,name in ipairs({
@@ -382,7 +334,6 @@ local function getCandyFolders()
         "CandiesZones"
     }) do
         local folder = halloween:FindFirstChild(name)
-
         if folder then
             table.insert(folders,folder)
         end
@@ -424,7 +375,6 @@ local function promptPosition(prompt)
             local ok,cf = pcall(function()
                 return node:GetPivot()
             end)
-
             if ok then return cf.Position end
         end
 
@@ -437,7 +387,7 @@ end
 local function findEntry(pos)
     for _,entry in pairs(entries) do
         if (entry.position-pos).Magnitude
-            <= Config.MergeRadius then
+            <= C.MergeRadius then
             return entry
         end
     end
@@ -461,7 +411,7 @@ local function createMarker(entry)
         Size=UDim2.fromOffset(150,40),
         StudsOffsetWorldSpace=Vector3.new(0,2.5,0),
         AlwaysOnTop=true,
-        Enabled=Config.ESP
+        Enabled=C.ESP
     })
 
     local label = make("TextLabel",billboard,{
@@ -496,7 +446,6 @@ local function removeEntry(id)
 end
 
 local function scanCandies()
-    -- Existing markers become saved if no longer streamed
     for _,entry in pairs(entries) do
         entry.prompt = nil
         entry.state = "saved"
@@ -510,9 +459,11 @@ local function scanCandies()
                 if pos then
                     local entry = findEntry(pos)
 
-                    -- Only ESP can discover NEW locations
-                    if not entry and Config.ESP then
-                        local id = tostring(obj)
+                    -- No new discovery with ESP disabled
+                    if not entry and C.ESP then
+                        entryCounter += 1
+
+                        local id = entryCounter
 
                         entry = {
                             id=id,
@@ -554,7 +505,7 @@ local function scanCandies()
             entry.label.TextColor3 = ORANGE
         end
 
-        entry.billboard.Enabled = Config.ESP
+        entry.billboard.Enabled = C.ESP
     end
 end
 
@@ -693,7 +644,7 @@ local function tapClaw(x,y)
 end
 
 local function clawStep()
-    if not (Config.AutoClaw or Config.AutoCollect) then
+    if not (C.AutoClaw or C.AutoCollect) then
         return
     end
 
@@ -729,16 +680,15 @@ local function clawStep()
 
         recoveryLastX = clawX
 
-        if now-lastTapAt >= Config.TapCooldown
-            and math.abs(gap) >= Config.RetryDistance
-            and moved >= Config.RetryMove then
-
+        if now-lastTapAt >= C.TapCooldown
+            and math.abs(gap) >= C.RetryDistance
+            and moved >= C.RetryMove then
             recoveryFrames += 1
         else
             recoveryFrames = 0
         end
 
-        if recoveryFrames >= Config.RetryFrames then
+        if recoveryFrames >= C.RetryFrames then
             clawPhase = "ready"
             lastClawX = nil
             lastClawT = nil
@@ -753,7 +703,6 @@ local function clawStep()
 
     if lastClawX and lastClawT
         and now > lastClawT then
-
         speed = math.clamp(
             (clawX-lastClawX)/(now-lastClawT),
             -3000,
@@ -762,17 +711,17 @@ local function clawStep()
     end
 
     local diff =
-        clawX + speed*Config.TapLead - candyX
+        clawX + speed*C.TapLead - candyX
 
     local crossed =
         lastDifference ~= nil
         and diff*lastDifference <= 0
-        and math.abs(diff) <= Config.CrossingTolerance
+        and math.abs(diff) <= C.CrossingTolerance
         and math.abs(lastDifference)
-            <= Config.CrossingTolerance
+            <= C.CrossingTolerance
 
     local aligned =
-        math.abs(diff) <= Config.TapTolerance
+        math.abs(diff) <= C.TapTolerance
 
     lastClawX = clawX
     lastClawT = now
@@ -783,7 +732,7 @@ local function clawStep()
     )
 
     if not aligned and not crossed then return end
-    if now-lastTapAt < Config.TapCooldown then return end
+    if now-lastTapAt < C.TapCooldown then return end
 
     local x = math.floor(
         panel.AbsolutePosition.X
@@ -806,7 +755,7 @@ local function clawStep()
 end
 
 -- =========================================
--- AUTO COLLECT: SAVED MARKERS ONLY
+-- AUTO COLLECT (SAVED MARKERS ONLY)
 -- =========================================
 
 local function stopCollection()
@@ -853,7 +802,7 @@ local function skipTarget(reason)
 end
 
 local function collectionStep()
-    if not Config.AutoCollect then return end
+    if not C.AutoCollect then return end
 
     local hum = getHumanoid()
     local root = hum and hum.RootPart
@@ -868,8 +817,6 @@ local function collectionStep()
 
     if collectPhase == "playing" then
         if not activeClaw then
-            -- Attempt ended; don't revisit immediately.
-            -- Remove marker only if its prompt has disappeared.
             if currentTarget then
                 if not currentTarget.prompt then
                     removeEntry(currentTarget.id)
@@ -900,7 +847,6 @@ local function collectionStep()
         return
     end
 
-    -- ONLY select SAVED, previously discovered markers
     if not currentTarget then
         currentTarget = findSavedTarget()
 
@@ -912,7 +858,6 @@ local function collectionStep()
         collectStarted = now
         collectPhase = "travelling"
 
-        -- Teleport only to its already known position
         root.CFrame = CFrame.new(
             currentTarget.position
             + Vector3.new(0,3,0)
@@ -925,7 +870,6 @@ local function collectionStep()
     end
 
     if collectPhase == "travelling" then
-        -- Give local streaming time to load the candy
         if now-collectStarted < 0.7 then
             return
         end
@@ -940,8 +884,6 @@ local function collectionStep()
             end
 
             local prompt = currentTarget.prompt
-
-            -- Move close to the actual loaded prompt
             local pos = promptPosition(prompt)
 
             if pos then
@@ -971,7 +913,7 @@ local function collectionStep()
 end
 
 -- =========================================
--- GUI
+-- GUI CREATION
 -- =========================================
 
 local guiParent = PG
@@ -982,7 +924,7 @@ if type(gethui) == "function" then
 end
 
 local gui = make("ScreenGui",guiParent,{
-    Name="SmithsHubV14",
+    Name="SmithsHubV15",
     ResetOnSpawn=false,
     IgnoreGuiInset=true,
     DisplayOrder=9000,
@@ -990,11 +932,12 @@ local gui = make("ScreenGui",guiParent,{
 })
 
 local window = make("Frame",gui,{
-    Size=UDim2.fromOffset(660,325),
-    Position=UDim2.new(0.5,-330,0.3,0),
+    Size=UDim2.fromOffset(660,290),
+    Position=UDim2.new(0.5,-330,0.32,0),
     BackgroundColor3=BG,
     BorderSizePixel=0,
-    Active=true
+    Active=true,
+    Visible=false
 })
 corner(window,12)
 
@@ -1003,19 +946,23 @@ local border = make("UIStroke",window,{
     Thickness=2
 })
 
+local windowScale = make("UIScale",window,{
+    Scale=0.92
+})
+
 local header = make("Frame",window,{
     Size=UDim2.new(1,0,0,48),
     BackgroundTransparency=1,
     Active=true
 })
 
--- LOGO PLACEHOLDERS
 local headerLogo = make("ImageLabel",header,{
     Position=UDim2.fromOffset(12,7),
     Size=UDim2.fromOffset(34,34),
     BackgroundTransparency=1,
     Image="",
-    ScaleType=Enum.ScaleType.Fit
+    ScaleType=Enum.ScaleType.Fit,
+    ZIndex=3
 })
 
 local headerFallback = make("TextLabel",header,{
@@ -1025,12 +972,13 @@ local headerFallback = make("TextLabel",header,{
     Text="S",
     TextColor3=WHITE,
     Font=Enum.Font.GothamBlack,
-    TextSize=23
+    TextSize=23,
+    ZIndex=2
 })
 corner(headerFallback,7)
 
 make("TextLabel",header,{
-    Text="SMITH'S HUB  |  V14",
+    Text="SMITH'S HUB  |  V15",
     Position=UDim2.fromOffset(56,2),
     Size=UDim2.fromOffset(300,44),
     BackgroundTransparency=1,
@@ -1087,69 +1035,279 @@ local miniBorder = make("UIStroke",mini,{
     Thickness=2
 })
 
--- TEMPORARY GITHUB LOGO LOADING
-local function loadGitHubLogo()
-    local assetLoader =
-        getcustomasset or getsynasset
+-- =========================================
+-- 3 SECOND WELCOME ANIMATION
+-- =========================================
+
+local splash = make("Frame",gui,{
+    Name="WelcomeOverlay",
+    Size=UDim2.fromScale(1,1),
+    Position=UDim2.fromScale(0,0),
+    BackgroundColor3=Color3.fromRGB(8,9,15),
+    BackgroundTransparency=0.25,
+    BorderSizePixel=0,
+    ZIndex=20
+})
+
+local splashCard = make("Frame",splash,{
+    AnchorPoint=Vector2.new(0.5,0.5),
+    Position=UDim2.fromScale(0.5,0.5),
+    Size=UDim2.fromOffset(76,76),
+    BackgroundColor3=BG,
+    BorderSizePixel=0,
+    ClipsDescendants=true,
+    ZIndex=21
+})
+corner(splashCard,18)
+
+local splashBorder = make("UIStroke",splashCard,{
+    Color=ORANGE,
+    Thickness=2.5
+})
+
+local splashLogo = make("ImageLabel",splashCard,{
+    AnchorPoint=Vector2.new(0.5,0.5),
+    Position=UDim2.fromScale(0.5,0.5),
+    Size=UDim2.fromOffset(52,52),
+    Image="",
+    BackgroundTransparency=1,
+    ScaleType=Enum.ScaleType.Fit,
+    ZIndex=24
+})
+
+local splashFallback = make("TextLabel",splashCard,{
+    AnchorPoint=Vector2.new(0.5,0.5),
+    Position=UDim2.fromScale(0.5,0.5),
+    Size=UDim2.fromOffset(52,52),
+    BackgroundColor3=PANEL,
+    Text="S",
+    TextColor3=WHITE,
+    Font=Enum.Font.GothamBlack,
+    TextSize=34,
+    ZIndex=23
+})
+corner(splashFallback,12)
+
+local welcomeTitle = make("TextLabel",splashCard,{
+    Text="WELCOME TO SMITH'S HUB",
+    Position=UDim2.fromOffset(115,39),
+    Size=UDim2.fromOffset(380,42),
+    BackgroundTransparency=1,
+    TextTransparency=1,
+    TextColor3=WHITE,
+    Font=Enum.Font.GothamBold,
+    TextSize=21,
+    TextXAlignment=Enum.TextXAlignment.Left,
+    ZIndex=23
+})
+
+local welcomeSubtitle = make("TextLabel",splashCard,{
+    Text="Movement  •  Auto Farm",
+    Position=UDim2.fromOffset(116,88),
+    Size=UDim2.fromOffset(370,25),
+    BackgroundTransparency=1,
+    TextTransparency=1,
+    TextColor3=GREY,
+    Font=Enum.Font.GothamMedium,
+    TextSize=13,
+    TextXAlignment=Enum.TextXAlignment.Left,
+    ZIndex=23
+})
+
+local loadingText = make("TextLabel",splashCard,{
+    Text="LOADING SMITH'S HUB...",
+    Position=UDim2.fromOffset(116,122),
+    Size=UDim2.fromOffset(370,20),
+    BackgroundTransparency=1,
+    TextTransparency=1,
+    TextColor3=ORANGE,
+    Font=Enum.Font.Gotham,
+    TextSize=11,
+    TextXAlignment=Enum.TextXAlignment.Left,
+    ZIndex=23
+})
+
+local progressTrack = make("Frame",splashCard,{
+    Position=UDim2.fromOffset(116,151),
+    Size=UDim2.fromOffset(365,5),
+    BackgroundColor3=PANEL,
+    BackgroundTransparency=1,
+    BorderSizePixel=0,
+    ZIndex=23
+})
+corner(progressTrack,4)
+
+local progressFill = make("Frame",progressTrack,{
+    Size=UDim2.fromScale(0,1),
+    BackgroundColor3=ORANGE,
+    BorderSizePixel=0,
+    ZIndex=24
+})
+corner(progressFill,4)
+
+-- Download GitHub logo once and share it across GUI.
+local function loadLogo()
+    local assetLoader = getcustomasset or getsynasset
 
     if type(writefile) ~= "function"
         or type(delfile) ~= "function"
         or type(assetLoader) ~= "function" then
-
-        warn("[Smith's Hub] Custom image APIs unavailable")
+        warn("[Smith's Hub] Custom logo APIs unavailable")
         return
     end
 
     task.spawn(function()
         local ok,asset = pcall(function()
             local bytes = game:HttpGet(LOGO_URL)
+            assert(type(bytes)=="string" and #bytes>100)
 
-            assert(
-                type(bytes) == "string"
-                    and #bytes > 100,
-                "Invalid image download"
-            )
-
-            writefile(LOGO_TEMP_FILE,bytes)
-            return assetLoader(LOGO_TEMP_FILE)
+            writefile(TEMP_LOGO,bytes)
+            return assetLoader(TEMP_LOGO)
         end)
 
-        if ok and type(asset) == "string" and alive then
-            headerLogo.Image = asset
-            miniLogo.Image = asset
+        if ok and type(asset)=="string" and alive then
+            headerLogo.Image=asset
+            miniLogo.Image=asset
+            splashLogo.Image=asset
 
-            headerFallback.Visible = false
-            mini.Text = ""
-
-            -- Wait for Roblox to load the local asset.
+            -- Try to load asset before removing temporary file.
             pcall(function()
                 CP:PreloadAsync({
                     headerLogo,
-                    miniLogo
+                    miniLogo,
+                    splashLogo
                 })
             end)
+
+            if alive then
+                headerFallback.Visible=false
+                splashFallback.Visible=false
+                mini.Text=""
+            end
         else
-            warn(
-                "[Smith's Hub] Logo failed:",
-                tostring(asset)
-            )
+            warn("[Smith's Hub] Logo unavailable:",
+                tostring(asset))
         end
 
-        -- Remove temporary executor workspace file.
-        -- The executor/Roblox may retain an asset cache.
         pcall(function()
-            if type(isfile) ~= "function"
-                or isfile(LOGO_TEMP_FILE) then
-                delfile(LOGO_TEMP_FILE)
+            if type(isfile)~="function"
+                or isfile(TEMP_LOGO) then
+                delfile(TEMP_LOGO)
             end
         end)
     end)
 end
 
+loadLogo()
+
+-- Stage 1: logo stays centered for 0.5s
+task.delay(0.5,function()
+    if not alive or not splashCard.Parent then return end
+
+    -- Stage 2: panel expands outward from logo
+    tween(splashCard,0.68,{
+        Size=UDim2.fromOffset(520,180)
+    })
+
+    tween(splashLogo,0.68,{
+        Position=UDim2.new(0,63,0.5,0)
+    })
+
+    tween(splashFallback,0.68,{
+        Position=UDim2.new(0,63,0.5,0)
+    })
+end)
+
+task.delay(1.15,function()
+    if not alive or not splashCard.Parent then return end
+
+    -- Stage 3: reveal welcome message
+    tween(welcomeTitle,0.35,{
+        TextTransparency=0
+    })
+
+    tween(welcomeSubtitle,0.45,{
+        TextTransparency=0
+    })
+
+    tween(loadingText,0.45,{
+        TextTransparency=0
+    })
+
+    tween(progressTrack,0.3,{
+        BackgroundTransparency=0
+    })
+
+    tween(progressFill,1.35,{
+        Size=UDim2.fromScale(1,1)
+    },Enum.EasingStyle.Sine)
+end)
+
+task.delay(2.65,function()
+    if not alive or not splashCard.Parent then return end
+
+    -- Fade the intro out
+    tween(splash,0.32,{
+        BackgroundTransparency=1
+    })
+
+    tween(splashCard,0.32,{
+        BackgroundTransparency=1
+    })
+
+    tween(splashBorder,0.32,{
+        Transparency=1
+    })
+
+    for _,label in ipairs({
+        welcomeTitle,
+        welcomeSubtitle,
+        loadingText
+    }) do
+        tween(label,0.25,{
+            TextTransparency=1
+        })
+    end
+
+    tween(splashLogo,0.25,{
+        ImageTransparency=1
+    })
+
+    tween(splashFallback,0.25,{
+        TextTransparency=1,
+        BackgroundTransparency=1
+    })
+
+    tween(progressTrack,0.25,{
+        BackgroundTransparency=1
+    })
+
+    tween(progressFill,0.25,{
+        BackgroundTransparency=1
+    })
+end)
+
+task.delay(3,function()
+    if not alive then return end
+
+    if splash.Parent then
+        splash:Destroy()
+    end
+
+    window.Visible=true
+
+    tween(windowScale,0.38,{
+        Scale=1
+    },Enum.EasingStyle.Back)
+end)
+
+-- =========================================
 -- DRAGGING
+-- =========================================
+
 local function draggable(handle,target)
-    local dragging = false
-    local moved = false
+    local dragging=false
+    local moved=false
     local activeInput
     local startMouse
     local startPos
@@ -1160,28 +1318,28 @@ local function draggable(handle,target)
             or input.UserInputType ==
             Enum.UserInputType.Touch then
 
-            dragging = true
-            moved = false
-            activeInput = input
-            startMouse = input.Position
-            startPos = target.Position
+            dragging=true
+            moved=false
+            activeInput=input
+            startMouse=input.Position
+            startPos=target.Position
         end
     end)
 
     connect(UIS.InputChanged,function(input)
         if not dragging then return end
 
-        if input == activeInput
+        if input==activeInput
             or (activeInput
                 and activeInput.UserInputType ==
                     Enum.UserInputType.MouseButton1
                 and input.UserInputType ==
                     Enum.UserInputType.MouseMovement) then
 
-            local delta = input.Position-startMouse
-            if delta.Magnitude > 8 then moved = true end
+            local delta=input.Position-startMouse
+            if delta.Magnitude>8 then moved=true end
 
-            target.Position = UDim2.new(
+            target.Position=UDim2.new(
                 startPos.X.Scale,
                 startPos.X.Offset+delta.X,
                 startPos.Y.Scale,
@@ -1191,15 +1349,15 @@ local function draggable(handle,target)
     end)
 
     connect(UIS.InputEnded,function(input)
-        if input == activeInput
+        if input==activeInput
             or (activeInput
                 and activeInput.UserInputType ==
                     Enum.UserInputType.MouseButton1
                 and input.UserInputType ==
                     Enum.UserInputType.MouseButton1) then
 
-            dragging = false
-            activeInput = nil
+            dragging=false
+            activeInput=nil
         end
     end)
 
@@ -1209,10 +1367,13 @@ local function draggable(handle,target)
 end
 
 draggable(header,window)
-local miniMoved = draggable(mini,mini)
+local miniMoved=draggable(mini,mini)
 
--- TAB BAR
-local nav = make("Frame",window,{
+-- =========================================
+-- TABS
+-- =========================================
+
+local nav=make("Frame",window,{
     Position=UDim2.fromOffset(16,55),
     Size=UDim2.new(1,-32,0,39),
     BackgroundColor3=DARK,
@@ -1221,7 +1382,7 @@ local nav = make("Frame",window,{
 corner(nav,8)
 
 local function tabButton(text,x)
-    local btn = make("TextButton",nav,{
+    local btn=make("TextButton",nav,{
         Text=text,
         Position=UDim2.new(x,3,0,3),
         Size=UDim2.new(0.5,-6,1,-6),
@@ -1235,16 +1396,16 @@ local function tabButton(text,x)
     return btn
 end
 
-local movementTab = tabButton("MOVEMENT",0)
-local farmTab = tabButton("AUTO FARM",0.5)
+local movementTab=tabButton("MOVEMENT",0)
+local farmTab=tabButton("AUTO FARM",0.5)
 
-local movementPage = make("Frame",window,{
+local movementPage=make("Frame",window,{
     Position=UDim2.fromOffset(16,105),
     Size=UDim2.new(1,-32,1,-120),
     BackgroundTransparency=1
 })
 
-local farmPage = make("Frame",window,{
+local farmPage=make("Frame",window,{
     Position=UDim2.fromOffset(16,105),
     Size=UDim2.new(1,-32,1,-120),
     BackgroundTransparency=1,
@@ -1252,12 +1413,13 @@ local farmPage = make("Frame",window,{
 })
 
 local function setTab(movement)
-    movementPage.Visible = movement
-    farmPage.Visible = not movement
+    movementPage.Visible=movement
+    farmPage.Visible=not movement
 
-    movementTab.BackgroundColor3 =
+    movementTab.BackgroundColor3=
         movement and ORANGE or PANEL
-    farmTab.BackgroundColor3 =
+
+    farmTab.BackgroundColor3=
         movement and PANEL or ORANGE
 end
 
@@ -1271,8 +1433,11 @@ end)
 
 setTab(true)
 
--- SLIDER FACTORY
-local function slider(parent,x,y,width,title,min,max,step,initial,callback)
+-- =========================================
+-- MOVEMENT: ONLY TWO VEHICLE SLIDERS
+-- =========================================
+
+local function slider(parent,x,y,width,title,callback)
     make("TextLabel",parent,{
         Text=title,
         Position=UDim2.fromOffset(x,y),
@@ -1280,85 +1445,80 @@ local function slider(parent,x,y,width,title,min,max,step,initial,callback)
         BackgroundTransparency=1,
         TextColor3=WHITE,
         Font=Enum.Font.GothamSemibold,
-        TextSize=13,
+        TextSize=14,
         TextXAlignment=Enum.TextXAlignment.Left
     })
 
-    local valueLabel = make("TextLabel",parent,{
-        Text="",
+    local valueLabel=make("TextLabel",parent,{
+        Text="1.0x",
         Position=UDim2.fromOffset(x+width-85,y),
         Size=UDim2.fromOffset(85,22),
         BackgroundTransparency=1,
         TextColor3=ORANGE,
         Font=Enum.Font.GothamBold,
-        TextSize=13,
+        TextSize=14,
         TextXAlignment=Enum.TextXAlignment.Right
     })
 
-    local track = make("Frame",parent,{
-        Position=UDim2.fromOffset(x,y+33),
-        Size=UDim2.fromOffset(width,7),
+    local track=make("Frame",parent,{
+        Position=UDim2.fromOffset(x,y+45),
+        Size=UDim2.fromOffset(width,8),
         BackgroundColor3=PANEL,
         BorderSizePixel=0
     })
     corner(track,5)
 
-    local fill = make("Frame",track,{
+    local fill=make("Frame",track,{
         Size=UDim2.fromScale(0,1),
         BackgroundColor3=ORANGE,
         BorderSizePixel=0
     })
     corner(fill,5)
 
-    local knob = make("Frame",track,{
-        Size=UDim2.fromOffset(17,17),
-        Position=UDim2.new(0,-8,0.5,-8),
+    local knob=make("Frame",track,{
+        Size=UDim2.fromOffset(19,19),
+        Position=UDim2.new(0,-9,0.5,-9.5),
         BackgroundColor3=WHITE,
         BorderSizePixel=0
     })
-    corner(knob,9)
+    corner(knob,10)
 
-    local hitbox = make("Frame",parent,{
-        Position=UDim2.fromOffset(x,y+24),
-        Size=UDim2.fromOffset(width,26),
+    local hitbox=make("Frame",parent,{
+        Position=UDim2.fromOffset(x,y+34),
+        Size=UDim2.fromOffset(width,30),
         BackgroundTransparency=1,
         Active=true,
         ZIndex=4
     })
 
-    local function set(v,apply)
-        v = math.clamp(
-            math.floor((v-min)/step+0.5)*step+min,
-            min,max
+    local function set(v)
+        v=math.clamp(
+            math.floor((v-1)/0.1+0.5)*0.1+1,
+            1,5
         )
 
-        local alpha = (v-min)/(max-min)
+        local alpha=(v-1)/4
 
-        fill.Size = UDim2.fromScale(alpha,1)
-        knob.Position = UDim2.new(alpha,-8,0.5,-8)
+        fill.Size=UDim2.fromScale(alpha,1)
+        knob.Position=UDim2.new(alpha,-9,0.5,-9.5)
 
-        if step < 1 then
-            valueLabel.Text=string.format("%.1fx",v)
-        else
-            valueLabel.Text=tostring(math.floor(v))
-        end
-
-        if apply then callback(v) end
+        valueLabel.Text=string.format("%.1fx",v)
+        callback(v)
     end
 
     local activeInput
-    local dragging = false
+    local dragging=false
 
     local function update(xpos)
-        if track.AbsoluteSize.X <= 0 then return end
+        if track.AbsoluteSize.X<=0 then return end
 
-        local alpha = math.clamp(
+        local alpha=math.clamp(
             (xpos-track.AbsolutePosition.X)
                 /track.AbsoluteSize.X,
             0,1
         )
 
-        set(min+alpha*(max-min),true)
+        set(1+alpha*4)
     end
 
     connect(hitbox.InputBegan,function(input)
@@ -1367,8 +1527,8 @@ local function slider(parent,x,y,width,title,min,max,step,initial,callback)
             or input.UserInputType ==
             Enum.UserInputType.Touch then
 
-            dragging = true
-            activeInput = input
+            dragging=true
+            activeInput=input
             update(input.Position.X)
         end
     end)
@@ -1376,7 +1536,7 @@ local function slider(parent,x,y,width,title,min,max,step,initial,callback)
     connect(UIS.InputChanged,function(input)
         if not dragging then return end
 
-        if input == activeInput
+        if input==activeInput
             or (activeInput
                 and activeInput.UserInputType ==
                     Enum.UserInputType.MouseButton1
@@ -1388,63 +1548,56 @@ local function slider(parent,x,y,width,title,min,max,step,initial,callback)
     end)
 
     connect(UIS.InputEnded,function(input)
-        if input == activeInput
+        if input==activeInput
             or (activeInput
                 and activeInput.UserInputType ==
                     Enum.UserInputType.MouseButton1
                 and input.UserInputType ==
                     Enum.UserInputType.MouseButton1) then
 
-            dragging = false
-            activeInput = nil
+            dragging=false
+            activeInput=nil
         end
     end)
 
-    set(initial,false)
+    set(1)
 end
 
--- MOVEMENT: TWO COLUMNS
 slider(
-    movementPage,14,14,278,
-    "WalkSpeed",0,200,1,Config.WalkSpeed,
+    movementPage,16,34,270,
+    "Acceleration Boost",
     function(v)
-        Config.WalkSpeed = v
-        Config.WalkChanged = true
-        applyMovement()
+        C.Acceleration=v
     end
 )
 
 slider(
-    movementPage,14,106,278,
-    "JumpPower",0,200,1,Config.JumpPower,
+    movementPage,334,34,270,
+    "Gear Speed Boost",
     function(v)
-        Config.JumpPower = v
-        Config.JumpChanged = true
-        applyMovement()
+        C.GearSpeed=v
     end
 )
 
-slider(
-    movementPage,330,14,278,
-    "Acceleration Boost",1,5,0.1,1,
-    function(v)
-        Config.Acceleration = v
-    end
-)
+make("TextLabel",movementPage,{
+    Text="Automatic A-Chassis detection  •  Normal steering and gear shifting",
+    Position=UDim2.fromOffset(16,126),
+    Size=UDim2.new(1,-32,0,24),
+    BackgroundTransparency=1,
+    TextColor3=GREY,
+    Font=Enum.Font.Gotham,
+    TextSize=12,
+    TextXAlignment=Enum.TextXAlignment.Left
+})
 
-slider(
-    movementPage,330,106,278,
-    "Gear Speed Boost",1,5,0.1,1,
-    function(v)
-        Config.GearSpeed = v
-    end
-)
+-- =========================================
+-- AUTO FARM: THREE TOGGLES
+-- =========================================
 
--- AUTO FARM: THREE BUTTONS
 local function toggleButton(x,title,enabled,callback)
-    local btn = make("TextButton",farmPage,{
+    local btn=make("TextButton",farmPage,{
         Text=title..": "..(enabled and "ON" or "OFF"),
-        Position=UDim2.fromOffset(x,17),
+        Position=UDim2.fromOffset(x,15),
         Size=UDim2.fromOffset(194,58),
         BackgroundColor3=enabled and ORANGE or OFF,
         BorderSizePixel=0,
@@ -1455,9 +1608,11 @@ local function toggleButton(x,title,enabled,callback)
     corner(btn,9)
 
     connect(btn.MouseButton1Click,function()
-        enabled = not enabled
+        enabled=not enabled
+
         btn.Text=title..": "..(enabled and "ON" or "OFF")
         btn.BackgroundColor3=enabled and ORANGE or OFF
+
         callback(enabled)
     end)
 
@@ -1465,7 +1620,7 @@ local function toggleButton(x,title,enabled,callback)
 end
 
 toggleButton(12,"CANDY ESP",true,function(v)
-    Config.ESP=v
+    C.ESP=v
 
     for _,entry in pairs(entries) do
         if entry.billboard then
@@ -1475,12 +1630,12 @@ toggleButton(12,"CANDY ESP",true,function(v)
 end)
 
 toggleButton(217,"AUTO CLAW",false,function(v)
-    Config.AutoClaw=v
+    C.AutoClaw=v
     resetClaw()
 end)
 
 toggleButton(422,"AUTO COLLECT",false,function(v)
-    Config.AutoCollect=v
+    C.AutoCollect=v
 
     if not v then
         stopCollection()
@@ -1489,10 +1644,10 @@ toggleButton(422,"AUTO COLLECT",false,function(v)
     end
 end)
 
-local farmInfo = make("TextLabel",farmPage,{
+local farmInfo=make("TextLabel",farmPage,{
     Text="VISIBLE: 0  |  SAVED: 0",
-    Position=UDim2.fromOffset(12,94),
-    Size=UDim2.new(1,-24,0,25),
+    Position=UDim2.fromOffset(12,89),
+    Size=UDim2.new(1,-24,0,23),
     BackgroundTransparency=1,
     TextColor3=WHITE,
     Font=Enum.Font.GothamSemibold,
@@ -1500,10 +1655,10 @@ local farmInfo = make("TextLabel",farmPage,{
     TextXAlignment=Enum.TextXAlignment.Left
 })
 
-local collectInfo = make("TextLabel",farmPage,{
+local collectInfo=make("TextLabel",farmPage,{
     Text="Auto Collect: OFF",
-    Position=UDim2.fromOffset(12,126),
-    Size=UDim2.new(1,-24,0,25),
+    Position=UDim2.fromOffset(12,119),
+    Size=UDim2.new(1,-24,0,22),
     BackgroundTransparency=1,
     TextColor3=GREY,
     Font=Enum.Font.Gotham,
@@ -1511,10 +1666,10 @@ local collectInfo = make("TextLabel",farmPage,{
     TextXAlignment=Enum.TextXAlignment.Left
 })
 
-local clawInfo = make("TextLabel",farmPage,{
+local clawInfo=make("TextLabel",farmPage,{
     Text="Auto Claw: OFF",
-    Position=UDim2.fromOffset(12,156),
-    Size=UDim2.new(1,-24,0,25),
+    Position=UDim2.fromOffset(12,145),
+    Size=UDim2.new(1,-24,0,22),
     BackgroundTransparency=1,
     TextColor3=GREY,
     Font=Enum.Font.Gotham,
@@ -1536,19 +1691,15 @@ connect(mini.MouseButton1Click,function()
     end
 end)
 
--- START LOGO LOADING
-loadGitHubLogo()
-
 -- =========================================
 -- UPDATE LOOPS
 -- =========================================
 
-local hue = 0
-local movementTimer = 0
-local vehicleTimer = 0
-local scanTimer = 0
-local collectTimer = 0
-local uiTimer = 0
+local hue=0
+local vehicleTimer=0
+local scanTimer=0
+local collectTimer=0
+local uiTimer=0
 
 connect(RS.Heartbeat,function(dt)
     if not alive then return end
@@ -1557,19 +1708,17 @@ connect(RS.Heartbeat,function(dt)
 
     hue=(hue+dt*0.17)%1
     local rgb=Color3.fromHSV(hue,0.85,1)
+
     border.Color=rgb
     miniBorder.Color=rgb
 
-    movementTimer += dt
-
-    if movementTimer >= 0.25 then
-        movementTimer=0
-        applyMovement()
+    if splashBorder.Parent then
+        splashBorder.Color=rgb
     end
 
     vehicleTimer += dt
 
-    if vehicleTimer >= 0.05 then
+    if vehicleTimer>=0.05 then
         local elapsed=vehicleTimer
         vehicleTimer=0
 
@@ -1579,8 +1728,8 @@ connect(RS.Heartbeat,function(dt)
             restoreVehicle()
         else
             if session and (
-                session.car ~= car
-                or session.seat ~= seat
+                session.car~=car
+                or session.seat~=seat
             ) then
                 restoreVehicle()
             end
@@ -1608,10 +1757,10 @@ connect(RS.Heartbeat,function(dt)
 
     scanTimer += dt
 
-    if scanTimer >= Config.ScanRate then
+    if scanTimer>=C.ScanRate then
         scanTimer=0
-
         local ok,err=pcall(scanCandies)
+
         if not ok then
             warn("[Smith's Hub] ESP:",err)
         end
@@ -1619,10 +1768,10 @@ connect(RS.Heartbeat,function(dt)
 
     collectTimer += dt
 
-    if collectTimer >= 0.25 then
+    if collectTimer>=0.25 then
         collectTimer=0
 
-        if Config.AutoCollect then
+        if C.AutoCollect then
             local ok,err=pcall(collectionStep)
 
             if not ok then
@@ -1634,7 +1783,7 @@ connect(RS.Heartbeat,function(dt)
 
     uiTimer += dt
 
-    if uiTimer >= 0.2 then
+    if uiTimer>=0.2 then
         uiTimer=0
 
         farmInfo.Text=string.format(
@@ -1646,7 +1795,7 @@ connect(RS.Heartbeat,function(dt)
         collectInfo.Text=collectStatus
 
         clawInfo.Text=
-            (Config.AutoClaw or Config.AutoCollect)
+            (C.AutoClaw or C.AutoCollect)
             and clawStatus
             or "Auto Claw: OFF"
     end
@@ -1655,7 +1804,7 @@ end)
 connect(RS.RenderStepped,function()
     if not alive then return end
 
-    if Config.AutoClaw or Config.AutoCollect then
+    if C.AutoClaw or C.AutoCollect then
         local ok,err=pcall(clawStep)
 
         if not ok then
@@ -1665,7 +1814,7 @@ connect(RS.RenderStepped,function()
 end)
 
 -- =========================================
--- UNLOAD
+-- CLEANUP
 -- =========================================
 
 local function unload()
@@ -1674,21 +1823,6 @@ local function unload()
 
     stopCollection()
     restoreVehicle()
-
-    for hum,original in pairs(originalHumanoids) do
-        if hum and hum.Parent then
-            pcall(function()
-                if Config.WalkChanged then
-                    hum.WalkSpeed=original.WalkSpeed
-                end
-
-                if Config.JumpChanged then
-                    hum.JumpPower=original.JumpPower
-                    hum.UseJumpPower=original.UseJumpPower
-                end
-            end)
-        end
-    end
 
     for _,c in ipairs(connections) do
         pcall(function()
@@ -1699,15 +1833,15 @@ local function unload()
     clearMarkers()
     gui:Destroy()
 
-    if Env.SmithHubV14Unload==unload then
-        Env.SmithHubV14Unload=nil
+    if ENV.SmithHubV15Unload==unload then
+        ENV.SmithHubV15Unload=nil
     end
 
-    print("[SMITH'S HUB V14] Unloaded")
+    print("[SMITH'S HUB V15] Unloaded")
 end
 
-Env.SmithHubV14Unload=unload
+ENV.SmithHubV15Unload=unload
 
 connect(close.MouseButton1Click,unload)
 
-print("[SMITH'S HUB V14] Loaded")
+print("[SMITH'S HUB V15] Loaded")
