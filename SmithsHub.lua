@@ -1,5 +1,5 @@
 
--- SMITH'S HUB V15.2
+-- SMITH'S HUB V15.3
 -- github.com/glitchlend/Smiths-Hub
 -- Movement: Acceleration + Gear Speed
 -- Auto Farm: ESP + Auto Claw + Auto Collect (visible + saved)
@@ -19,6 +19,7 @@ local PG = Player:WaitForChild("PlayerGui")
 local ENV = (getgenv and getgenv()) or _G
 
 for _, name in ipairs({
+    "SmithHubV153Unload",
     "SmithHubV152Unload",
     "SmithHubV15Unload",
     "SmithHubV14Unload",
@@ -391,23 +392,13 @@ local function promptPosition(prompt)
     return nil
 end
 
+-- Locations completed in this script session. Only one shared table.
 local collectedPositions = {}
 
 local function alreadyCollected(pos)
+    if not pos then return false end
     for _,savedPos in ipairs(collectedPositions) do
         if (savedPos-pos).Magnitude <= C.MergeRadius then
-            return true
-        end
-    end
-    return false
-end
-
-
-local collectedPositions = {}
-
-local function alreadyCollected(pos)
-    for _, savedPos in ipairs(collectedPositions) do
-        if (savedPos - pos).Magnitude <= C.MergeRadius then
             return true
         end
     end
@@ -477,9 +468,19 @@ local function removeEntry(id)
 end
 
 local function scanCandies()
-    for _,entry in pairs(entries) do
-        entry.prompt = nil
-        entry.state = "saved"
+    -- Remove collected markers even if they had already become saved.
+    -- This also prevents old entries from surviving another scan.
+    local staleIds = {}
+    for id,entry in pairs(entries) do
+        if alreadyCollected(entry.position) then
+            table.insert(staleIds,id)
+        else
+            entry.prompt = nil
+            entry.state = "saved"
+        end
+    end
+    for _,id in ipairs(staleIds) do
+        removeEntry(id)
     end
 
     for _,folder in ipairs(getCandyFolders()) do
@@ -487,7 +488,8 @@ local function scanCandies()
             if isCandyPrompt(obj) then
                 local pos = promptPosition(obj)
 
-                if pos then
+                -- Don't rediscover candy we've already completed.
+                if pos and not alreadyCollected(pos) then
                     local entry = findEntry(pos)
 
                     -- No new discovery with ESP disabled
@@ -888,15 +890,24 @@ local function finishClaw()
     local now = os.clock()
 
     if currentTarget then
-        local target = currentTarget
+        local pos = currentTarget.position
 
-        -- Do not immediately attempt this same candy again.
-        target.nextAttempt = now + C.TargetRetryDelay
+        -- Remember this location, so a streamed prompt cannot add it again.
+        if pos and not alreadyCollected(pos) then
+            table.insert(collectedPositions,pos)
+        end
 
-        -- A missing prompt after the claw closes suggests collection.
-        -- Otherwise retain its marker for a later scan/retry.
-        if not target.prompt then
-            removeEntry(target.id)
+        -- Delete every entry close to the completed target, including
+        -- saved entries. Don't change entries while iterating them.
+        local removeIds = {}
+        for id,entry in pairs(entries) do
+            if id == currentTarget.id or (pos and
+                (entry.position-pos).Magnitude <= C.MergeRadius) then
+                table.insert(removeIds,id)
+            end
+        end
+        for _,id in ipairs(removeIds) do
+            removeEntry(id)
         end
     end
 
@@ -904,7 +915,7 @@ local function finishClaw()
     collectPhase = "cooldown"
     clawClosedSince = nil
     nextCandyAt = now + C.NextCandyDelay
-    collectStatus = "Claw closed | Waiting 2 seconds for payout"
+    collectStatus = "Claw finished | Marker cleared | Waiting 2 seconds"
 end
 
 local function collectionStep()
@@ -1073,7 +1084,7 @@ if type(gethui) == "function" then
 end
 
 local gui = make("ScreenGui",guiParent,{
-    Name="SmithsHubV152",
+    Name="SmithsHubV153",
     ResetOnSpawn=false,
     IgnoreGuiInset=true,
     DisplayOrder=9000,
@@ -1127,7 +1138,7 @@ local headerFallback = make("TextLabel",header,{
 corner(headerFallback,7)
 
 make("TextLabel",header,{
-    Text="SMITH'S HUB  |  V15.2",
+    Text="SMITH'S HUB  |  V15.3",
     Position=UDim2.fromOffset(56,2),
     Size=UDim2.fromOffset(300,44),
     BackgroundTransparency=1,
@@ -2008,15 +2019,15 @@ local function unload()
     clearMarkers()
     gui:Destroy()
 
-    if ENV.SmithHubV152Unload==unload then
-        ENV.SmithHubV152Unload=nil
+    if ENV.SmithHubV153Unload==unload then
+        ENV.SmithHubV153Unload=nil
     end
 
-    print("[SMITH'S HUB V15.2] Unloaded")
+    print("[SMITH'S HUB V15.3] Unloaded")
 end
 
-ENV.SmithHubV152Unload=unload
+ENV.SmithHubV153Unload=unload
 
 connect(close.MouseButton1Click,unload)
 
-print("[SMITH'S HUB V15.2] Loaded")
+print("[SMITH'S HUB V15.3] Loaded")
