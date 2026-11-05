@@ -35,7 +35,7 @@ for _, name in ipairs({
 end
 
 local LOGO_URL =
-    "https://raw.githubusercontent.com/glitchlend/Smiths-Hub/main/logo.png"
+    "https://raw.githubusercontent.com/glitchlend/Smiths-Hub/main/assets/logo.png"
 
 local TEMP_LOGO = "SmithsHub_Logo_Temp.png"
 
