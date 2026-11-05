@@ -1837,8 +1837,23 @@ toggleButton(217,"AUTO CLAW",false,function(v)
     resetClaw()
 end)
 
+
 toggleButton(422,"AUTO COLLECT",false,function(v)
-    C.AutoCollect=v
+    C.AutoCollect = v
+
+    if not v then
+        stopCollection()
+    else
+        -- Immediately refresh visible candies
+        local ok, err = pcall(scanCandies)
+
+        if not ok then
+            warn("[Smith's Hub] Scan:", err)
+        end
+
+        collectStatus = "Searching visible + saved candies"
+    end
+end)
 
     if not v then
         stopCollection()
@@ -1985,20 +2000,6 @@ connect(RS.Heartbeat,function(dt)
         end
     end
 
-    collectTimer += dt
-
-    if collectTimer>=0.25 then
-        collectTimer=0
-
-        if C.AutoCollect then
-            local ok,err=pcall(collectionStep)
-
-            if not ok then
-                collectStatus="Collection error"
-                warn("[Smith's Hub] Collect:",err)
-            end
-        end
-    end
 
     uiTimer += dt
 
@@ -2031,6 +2032,33 @@ connect(RS.RenderStepped,function()
         end
     end
 end)
+
+
+-- INDEPENDENT AUTO COLLECT LOOP
+local collectHeartbeatTimer = 0
+
+connect(RS.Heartbeat, function(dt)
+    if not alive or not C.AutoCollect then
+        collectHeartbeatTimer = 0
+        return
+    end
+
+    collectHeartbeatTimer += math.min(dt, 0.1)
+
+    if collectHeartbeatTimer < 0.25 then
+        return
+    end
+
+    collectHeartbeatTimer = 0
+
+    local ok, err = pcall(collectionStep)
+
+    if not ok then
+        collectStatus = "Auto Collect ERROR"
+        warn("[Smith's Hub] Collection error:", err)
+    end
+end)
+
 
 -- =========================================
 -- CLEANUP
