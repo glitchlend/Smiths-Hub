@@ -1,9 +1,10 @@
 
--- SMITH'S HUB V15
+-- SMITH'S HUB V15.2
 -- github.com/glitchlend/Smiths-Hub
 -- Movement: Acceleration + Gear Speed
--- Auto Farm: ESP + Auto Claw + Auto Collect
+-- Auto Farm: ESP + Auto Claw + Auto Collect (visible + saved)
 -- Animated 3-second welcome screen
+-- Claw-close confirmation + 2-second collection cooldown
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -18,6 +19,7 @@ local PG = Player:WaitForChild("PlayerGui")
 local ENV = (getgenv and getgenv()) or _G
 
 for _, name in ipairs({
+    "SmithHubV152Unload",
     "SmithHubV15Unload",
     "SmithHubV14Unload",
     "SmithHubV13Unload",
@@ -53,7 +55,12 @@ local C = {
     TapCooldown = 2,
     RetryMove = 2,
     RetryDistance = 35,
-    RetryFrames = 3
+    RetryFrames = 3,
+
+    -- Auto Collect waits for the claw/result screen to close, then settles.
+    NextCandyDelay = 2,
+    ClawCloseConfirm = 0.5,
+    TargetRetryDelay = 30
 }
 
 local alive = true
@@ -754,44 +761,48 @@ local function clawStep()
     end
 end
 
-
 -- =========================================
--- AUTO COLLECT V15.1
--- Visible + Saved candy markers
--- Wait for claw to close + 2-second delay
+-- AUTO COLLECT (VISIBLE + SAVED DISCOVERED MARKERS)
 -- =========================================
 
-local NEXT_CANDY_DELAY = 2
-local CLAW_CLOSE_CONFIRM = 0.4
-local TARGET_RETRY_DELAY = 30
-
-local clawClosedSince = nil
+-- When the claw closes, verify it stays closed briefly,
+-- then wait ANOTHER two seconds before travelling.
 local nextCandyAt = 0
+local clawClosedSince = nil
 
--- Detect the entire claw interface, including
--- moments when its moving objects disappear.
--- This is more reliable than getClaw() alone.
-
+-- Unlike getClaw(), this also checks the result/payout period.
+-- The moving carriage may disappear before the CandyClaw UI closes.
 local function isClawUIOpen()
     local g = PG:FindFirstChild("CandyClaw")
 
-    if not g or not g:IsA("ScreenGui") then
-        return false
-    end
-
-    if not g.Enabled then
+    if not g or not g:IsA("ScreenGui") or not g.Enabled then
         return false
     end
 
     local panel = g:FindFirstChild("Panel", true)
 
-    if panel and panel:IsA("GuiObject") then
-        return guiVisible(panel)
+    if panel and panel:IsA("GuiObject")
+        and guiVisible(panel) then
+        return true
     end
 
-    -- If the GUI is enabled but the panel has
-    -- temporarily disappeared, be conservative.
-    return true
+    -- Some versions hide the game panel while displaying results.
+    for _,obj in ipairs(g:GetDescendants()) do
+        if obj:IsA("GuiObject") and guiVisible(obj) then
+            local name = obj.Name:lower()
+            if name:find("result",1,true)
+                or name:find("reward",1,true)
+                or name:find("payout",1,true)
+                or name:find("complete",1,true)
+                or name:find("win",1,true) then
+                return true
+            end
+        end
+    end
+
+    -- With the Panel hidden and no result visible, the game has closed.
+    -- If this GUI has no Panel, treat Enabled as open to be safe.
+    return panel == nil
 end
 
 local function stopCollection()
@@ -803,30 +814,28 @@ local function stopCollection()
     collectStatus = "Auto Collect: OFF"
 end
 
--- BOTH VISIBLE AND SAVED MARKERS ARE ELIGIBLE
+-- Select already discovered candies, regardless of whether they
+-- are currently streamed in (visible) or remembered (saved).
 local function findCollectTarget()
     local hum = getHumanoid()
     local root = hum and hum.RootPart
 
     if not root then return nil end
 
-    local bestEntry = nil
+    local bestEntry
     local bestDistance = math.huge
     local now = os.clock()
 
-    for _, entry in pairs(entries) do
-
+    for _,entry in pairs(entries) do
         local eligible =
             entry.state == "visible"
             or entry.state == "saved"
 
-        local available =
-            now >= (entry.nextAttempt or 0)
-
-        if eligible and available and entry.position then
+        if eligible and entry.position
+            and now >= (entry.nextAttempt or 0) then
 
             local distance =
-                (root.Position - entry.position).Magnitude
+                (root.Position-entry.position).Magnitude
 
             if distance < bestDistance then
                 bestDistance = distance
@@ -841,14 +850,13 @@ end
 local function skipTarget(reason)
     if currentTarget then
         currentTarget.nextAttempt =
-            os.clock() + TARGET_RETRY_DELAY
+            os.clock() + C.TargetRetryDelay
     end
 
     currentTarget = nil
     collectPhase = "idle"
     collectStarted = 0
     clawClosedSince = nil
-
     collectStatus = reason
 end
 
@@ -856,32 +864,27 @@ local function finishClaw()
     local now = os.clock()
 
     if currentTarget then
-        -- Prevent immediate retries of the same candy.
-        currentTarget.nextAttempt =
-            now + TARGET_RETRY_DELAY
+        local target = currentTarget
 
-        -- If the actual candy prompt disappeared,
-        -- remove its marker as in the previous version.
-        if not currentTarget.prompt then
-            removeEntry(currentTarget.id)
+        -- Do not immediately attempt this same candy again.
+        target.nextAttempt = now + C.TargetRetryDelay
+
+        -- A missing prompt after the claw closes suggests collection.
+        -- Otherwise retain its marker for a later scan/retry.
+        if not target.prompt then
+            removeEntry(target.id)
         end
     end
 
     currentTarget = nil
-
-    -- IMPORTANT:
-    -- No further teleporting until this expires.
     collectPhase = "cooldown"
-    nextCandyAt = now + NEXT_CANDY_DELAY
     clawClosedSince = nil
-
-    collectStatus = "Claw complete | Waiting 2 seconds"
+    nextCandyAt = now + C.NextCandyDelay
+    collectStatus = "Claw closed | Waiting 2 seconds for payout"
 end
 
 local function collectionStep()
-    if not C.AutoCollect then
-        return
-    end
+    if not C.AutoCollect then return end
 
     local hum = getHumanoid()
     local root = hum and hum.RootPart
@@ -894,181 +897,113 @@ local function collectionStep()
     local now = os.clock()
     local clawOpen = isClawUIOpen()
 
-    -- =====================================
-    -- 1. WAIT FOR CURRENT CLAW TO FINISH
-    -- =====================================
-
+    -- While the claw or payout screen is active, never teleport.
     if collectPhase == "playing" then
-
         if clawOpen then
-            -- The claw is still on screen.
-            -- Never teleport while it's open.
             clawClosedSince = nil
-
-            collectStatus =
-                "Playing claw | Waiting for completion"
-
+            collectStatus = "Claw active | Waiting for result screen"
             return
         end
 
-        -- It has disappeared.
-        -- Confirm it stays closed briefly,
-        -- avoiding false transitions between screens.
-
+        -- The carriage can disappear mid-animation. Require a
+        -- sustained close before starting the payout cooldown.
         if not clawClosedSince then
             clawClosedSince = now
-
-            collectStatus =
-                "Claw closing | Confirming completion"
-
+            collectStatus = "Confirming claw has fully closed"
             return
         end
 
-        if now - clawClosedSince < CLAW_CLOSE_CONFIRM then
+        if now - clawClosedSince < C.ClawCloseConfirm then
             return
         end
 
-        -- Claw has now fully closed.
         finishClaw()
         return
     end
 
-    -- =====================================
-    -- 2. POST-CLAW COOLDOWN
-    -- =====================================
-
     if collectPhase == "cooldown" then
-
-        -- If a result/payout screen reopens,
-        -- wait for that too.
         if clawOpen then
+            -- Late result screen: do not count this time as cooldown.
             collectPhase = "playing"
             clawClosedSince = nil
-
-            collectStatus =
-                "Waiting for claw/result screen to close"
-
+            collectStatus = "Waiting for result/payout screen"
             return
         end
 
         local remaining = nextCandyAt - now
-
         if remaining > 0 then
             collectStatus = string.format(
-                "Next candy in %.1f seconds",
+                "Payout delay | Next candy in %.1f s",
                 remaining
             )
             return
         end
 
-        -- Two seconds completed.
         collectPhase = "idle"
         nextCandyAt = 0
-
         collectStatus = "Ready for next candy"
     end
 
-    -- =====================================
-    -- 3. WAIT FOR MINIGAME TO OPEN
-    -- =====================================
-
     if collectPhase == "triggered" then
-
         if clawOpen then
             collectPhase = "playing"
             clawClosedSince = nil
-
             collectStatus = "Playing claw minigame"
-            return
-        end
-
-        if now - collectStarted > 12 then
-            skipTarget("Minigame timeout | Skipping")
+        elseif now - collectStarted > 12 then
+            skipTarget("Minigame timeout; skipping")
         else
             collectStatus = "Waiting for claw to open"
         end
-
         return
     end
 
-    -- =====================================
-    -- 4. WAIT IF ANY CLAW IS ACTIVE
-    -- =====================================
-
+    -- An already-open claw must finish before starting any new candy.
     if clawOpen then
-        collectStatus =
-            "Waiting for existing claw minigame"
-
+        collectStatus = "Waiting for existing claw to close"
         return
     end
-
-    -- =====================================
-    -- 5. CHOOSE NEXT CANDY
-    -- =====================================
 
     if not currentTarget then
-
         currentTarget = findCollectTarget()
 
         if not currentTarget then
-            collectStatus =
-                "No available visible or saved candies"
-
+            collectStatus = "No available visible or saved candies"
             return
         end
 
         collectStarted = now
         collectPhase = "travelling"
 
-        -- Travel only to a previously detected marker.
-        -- No map scanning or unknown locations.
-
+        -- Only travel to locations previously detected by ESP;
+        -- no map sweep, random searching, or unexplored locations.
         root.CFrame = CFrame.new(
             currentTarget.position
-            + Vector3.new(0, 3, 0)
+            + Vector3.new(0,3,0)
         )
 
         root.AssemblyLinearVelocity = Vector3.zero
 
-        collectStatus = (
-            currentTarget.state == "visible"
+        collectStatus = currentTarget.state == "visible"
             and "Travelling to visible candy"
             or "Travelling to saved candy"
-        )
-
         return
     end
 
-    -- =====================================
-    -- 6. ACTIVATE CANDY PROMPT
-    -- =====================================
-
     if collectPhase == "travelling" then
-
-        -- Give the game time to stream objects.
         if now - collectStarted < 0.7 then
             return
         end
 
-        -- Never activate another candy
-        -- while a claw interface is active.
         if isClawUIOpen() then
-            collectStatus =
-                "Waiting for existing claw to finish"
-
+            collectStatus = "Waiting for existing claw to close"
             return
         end
 
         local prompt = currentTarget.prompt
 
-        if prompt
-            and prompt.Parent
-            and prompt.Enabled then
-
+        if prompt and prompt.Parent and prompt.Enabled then
             if type(fireproximityprompt) ~= "function" then
-                skipTarget(
-                    "Executor lacks fireproximityprompt"
-                )
+                skipTarget("Executor lacks fireproximityprompt")
                 return
             end
 
@@ -1076,44 +1011,31 @@ local function collectionStep()
 
             if pos then
                 root.CFrame = CFrame.new(
-                    pos + Vector3.new(0, 2, 0)
+                    pos + Vector3.new(0,2,0)
                 )
-
-                root.AssemblyLinearVelocity =
-                    Vector3.zero
+                root.AssemblyLinearVelocity = Vector3.zero
             end
 
-            local ok = pcall(function()
+            local ok,err = pcall(function()
                 fireproximityprompt(prompt)
             end)
 
             if ok then
                 collectPhase = "triggered"
                 collectStarted = now
-
-                collectStatus =
-                    "Activating candy | Waiting for claw"
+                collectStatus = "Opening candy | Waiting for claw"
             else
-                skipTarget(
-                    "Candy prompt failed | Skipping"
-                )
+                warn("[Smith's Hub] Candy prompt:",err)
+                skipTarget("Prompt failed; trying another candy")
             end
 
-            return
-        end
-
-        -- Candy may not have streamed yet.
-        if now - collectStarted > 8 then
-            skipTarget(
-                "Candy not loaded | Trying another"
-            )
+        elseif now - collectStarted > 8 then
+            skipTarget("Candy not streamed; trying another")
         else
-            collectStatus =
-                "Waiting for candy to stream"
+            collectStatus = "Waiting for candy to stream"
         end
     end
 end
-
 
 -- =========================================
 -- GUI CREATION
@@ -1127,7 +1049,7 @@ if type(gethui) == "function" then
 end
 
 local gui = make("ScreenGui",guiParent,{
-    Name="SmithsHubV15",
+    Name="SmithsHubV152",
     ResetOnSpawn=false,
     IgnoreGuiInset=true,
     DisplayOrder=9000,
@@ -1181,7 +1103,7 @@ local headerFallback = make("TextLabel",header,{
 corner(headerFallback,7)
 
 make("TextLabel",header,{
-    Text="SMITH'S HUB  |  V15",
+    Text="SMITH'S HUB  |  V15.2",
     Position=UDim2.fromOffset(56,2),
     Size=UDim2.fromOffset(300,44),
     BackgroundTransparency=1,
@@ -1837,21 +1759,18 @@ toggleButton(217,"AUTO CLAW",false,function(v)
     resetClaw()
 end)
 
-
 toggleButton(422,"AUTO COLLECT",false,function(v)
-    C.AutoCollect = v
+    C.AutoCollect=v
 
     if not v then
         stopCollection()
     else
-        -- Immediately refresh visible candies
-        local ok, err = pcall(scanCandies)
-
+        -- Refresh markers immediately. Both visible and saved count.
+        local ok,err = pcall(scanCandies)
         if not ok then
-            warn("[Smith's Hub] Scan:", err)
+            warn("[Smith's Hub] Candy scan:",err)
         end
-
-        collectStatus = "Searching visible + saved candies"
+        collectStatus="Searching visible and saved candies"
     end
 end)
 
@@ -1888,12 +1807,13 @@ local clawInfo=make("TextLabel",farmPage,{
     TextXAlignment=Enum.TextXAlignment.Left
 })
 
--- STREAMING ENABLED NOTICE
-local streamingNotice = make("TextLabel",farmPage,{
+-- STREAMINGENABLED NOTICE
+-- Candies must stream in nearby before the ESP can discover them.
+local streamingNotice=make("TextLabel",farmPage,{
     Name="StreamingNotice",
-    Text="⚠ STREAMING ENABLED: You must get close enough to candies for them to load before ESP can detect them and Auto Collect can collect them.",
-    Position=UDim2.fromOffset(12,181),
-    Size=UDim2.new(1,-24,0,40),
+    Text="STREAMING ENABLED: Get close enough to candies for them to load before they can be detected and collected.",
+    Position=UDim2.fromOffset(12,183),
+    Size=UDim2.new(1,-24,0,42),
     BackgroundColor3=DARK,
     BorderSizePixel=0,
     TextColor3=GREY,
@@ -1925,7 +1845,6 @@ end)
 local hue=0
 local vehicleTimer=0
 local scanTimer=0
-local collectTimer=0
 local uiTimer=0
 
 connect(RS.Heartbeat,function(dt)
@@ -1993,7 +1912,6 @@ connect(RS.Heartbeat,function(dt)
         end
     end
 
-
     uiTimer += dt
 
     if uiTimer>=0.2 then
@@ -2014,6 +1932,26 @@ connect(RS.Heartbeat,function(dt)
     end
 end)
 
+-- INDEPENDENT AUTO-COLLECT LOOP
+-- Not gated by vehicle or ESP update logic.
+local collectionTimer = 0
+connect(RS.Heartbeat,function(dt)
+    if not alive or not C.AutoCollect then
+        collectionTimer = 0
+        return
+    end
+
+    collectionTimer += math.min(dt,0.1)
+    if collectionTimer < 0.25 then return end
+    collectionTimer = 0
+
+    local ok,err = pcall(collectionStep)
+    if not ok then
+        collectStatus = "Auto Collect ERROR"
+        warn("[Smith's Hub] Collection:",err)
+    end
+end)
+
 connect(RS.RenderStepped,function()
     if not alive then return end
 
@@ -2025,33 +1963,6 @@ connect(RS.RenderStepped,function()
         end
     end
 end)
-
-
--- INDEPENDENT AUTO COLLECT LOOP
-local collectHeartbeatTimer = 0
-
-connect(RS.Heartbeat, function(dt)
-    if not alive or not C.AutoCollect then
-        collectHeartbeatTimer = 0
-        return
-    end
-
-    collectHeartbeatTimer += math.min(dt, 0.1)
-
-    if collectHeartbeatTimer < 0.25 then
-        return
-    end
-
-    collectHeartbeatTimer = 0
-
-    local ok, err = pcall(collectionStep)
-
-    if not ok then
-        collectStatus = "Auto Collect ERROR"
-        warn("[Smith's Hub] Collection error:", err)
-    end
-end)
-
 
 -- =========================================
 -- CLEANUP
@@ -2073,15 +1984,15 @@ local function unload()
     clearMarkers()
     gui:Destroy()
 
-    if ENV.SmithHubV15Unload==unload then
-        ENV.SmithHubV15Unload=nil
+    if ENV.SmithHubV152Unload==unload then
+        ENV.SmithHubV152Unload=nil
     end
 
-    print("[SMITH'S HUB V15] Unloaded")
+    print("[SMITH'S HUB V15.2] Unloaded")
 end
 
-ENV.SmithHubV15Unload=unload
+ENV.SmithHubV152Unload=unload
 
 connect(close.MouseButton1Click,unload)
 
-print("[SMITH'S HUB V15] Loaded")
+print("[SMITH'S HUB V15.2] Loaded")
