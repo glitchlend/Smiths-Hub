@@ -1,62 +1,109 @@
-# Smith's Hub
+Smith's Hub
 
-A custom Roblox utility hub for **Young Street, Ontario (YSO)**, featuring movement controls, vehicle performance tuning and Halloween candy tools.
+A custom utility hub for Young Street, Ontario (YSO) on Roblox.
 
-## Features
+Smith's Hub includes vehicle performance modifications, Halloween candy tools, a custom GUI and an animated loading screen.
 
-### Movement
-- **WalkSpeed:** Adjust your character's walking speed.
-- **JumpPower:** Adjust your character's jumping power.
-- **Acceleration Boost:** Increase vehicle acceleration from 1× to 5×.
-- **Gear Speed Boost:** Increase maximum speed within each forward gear from 1× to 5×.
-- Automatically detects compatible A-Chassis vehicles and reads their individual settings.
-- Preserves normal steering, braking, gear shifting and engine redline behaviour where supported.
+Features
 
-### Auto Farm
-- **Candy ESP:** Displays markers for discovered candies.
-- **Auto Claw:** Automatically attempts the Halloween claw minigame.
-- **Auto Collect:** Teleports to previously discovered and saved candy markers to attempt collection.
-- No automatic map searching or discovery sweeps.
-- Discovered markers are stored for the current script session.
+🚗 Movement
 
-## Installation
+Acceleration Boost
 
-Run the following in a compatible Roblox Lua executor:
+- Adjustable acceleration multiplier from 1× to 5×.
+- Increases engine power while retaining normal gear shifting and RPM behaviour.
+- Automatically detects compatible A-Chassis vehicles.
 
-`loadstring(game:HttpGet("https://raw.githubusercontent.com/glitchlend/Smiths-Hub/main/SmithsHub.lua"))()`
+Gear Speed Boost
 
-Requires an executor supporting the script's relevant APIs.
+- Adjustable gear speed multiplier from 1× to 5×.
+- Increases the maximum speed of every forward gear.
+- Preserves the vehicle's original gear spacing.
+- Works alongside the Acceleration Boost.
 
-## Interface
+Both settings operate automatically while driving. No activation key is required.
 
-Smith's Hub includes two tabs:
+🍬 Auto Farm
 
-**Movement** — Character movement and vehicle performance settings.
+Candy ESP
 
-**Auto Farm** — Candy ESP, Auto Claw and Auto Collect.
+- Detects Halloween candies within the game's streaming distance.
+- Displays markers showing discovered candy locations.
+- Remembers discovered locations as saved markers when they are no longer streamed.
+- Separately displays the number of visible and saved candies.
 
-The interface includes a draggable window, a minimised icon and an animated RGB border.
+Auto Claw
 
-## Custom Logo
+- Automatically plays the Halloween candy claw minigame.
+- Uses timing and alignment detection to attempt each claw.
+- Includes recovery handling for missed attempts.
 
-The hub automatically retrieves its logo from this repository. It uses a temporary local file to register the image, then attempts to delete that temporary file after loading.
+Auto Collect
 
-The user does not need to manually install the logo.
+- Automatically teleports between previously discovered candies.
+- Supports both currently visible candies and saved markers.
+- Attempts to activate each candy's collection prompt.
+- Uses Auto Claw to complete the minigame.
+- Waits for the claw interface to close, then waits an additional 2 seconds before collecting the next candy.
+- Includes retry handling for unavailable candies.
 
-## Compatibility
+⚠ StreamingEnabled Notice
 
-Designed for Roblox Young Street, Ontario, including supported A-Chassis vehicles.
+Due to Roblox's StreamingEnabled system, candies must be loaded within your streaming distance before they can be detected.
 
-Some features depend on executor capabilities, game updates, client physics and vehicle configurations. Functionality is not guaranteed across all executors or vehicles.
+You must first travel close enough to the candies for ESP to discover them. Auto Collect can then use their visible or saved markers.
 
-## Disclaimer
+Auto Collect does not automatically search unexplored areas of the map.
 
-Unofficial community-created script. Not affiliated with Roblox or the developers of Young Street, Ontario.
+Discovered markers are retained for the current script session only.
 
-Using third-party scripts may violate the game's rules or Roblox's terms and can result in account penalties.
+🎨 Interface
 
-## Credits
+Smith's Hub features:
 
-Developed by **glitchlend**.
+- A horizontal, two-tab GUI.
+- Movement and Auto Farm sections.
+- Adjustable performance sliders.
+- Individual Auto Farm toggles.
+- A draggable and minimisable window.
+- Animated RGB borders.
+- A custom Smith's Hub logo.
+- A three-second startup animation displaying "Welcome to Smith's Hub".
+
+The logo is automatically retrieved from GitHub through a temporary file, which the script attempts to delete after loading.
+
+🚀 Installation
+
+Run the following code in a compatible Roblox Lua executor:
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/glitchlend/Smiths-Hub/main/SmithsHub.lua"))()
+
+The loader retrieves the latest committed version of Smith's Hub from this repository's main branch.
+
+Compatibility
+
+Game: Young Street, Ontario (YSO)
+
+Executor: Requires support for the relevant Lua executor APIs.
+
+Vehicle performance modifications require compatible A-Chassis vehicles.
+
+The Auto Farm tools depend on the game's Halloween event objects, StreamingEnabled behaviour and available executor functions.
+
+Features may stop functioning following game updates, and successful collection is not guaranteed.
+
+Disclaimer
+
+Smith's Hub is an unofficial community-created script and is not affiliated with Roblox or the developers of Young Street, Ontario.
+
+Using third-party executors or modifications may violate game rules or Roblox's terms of use and could result in account penalties.
+
+Developer
+
+glitchlend
 
 GitHub: https://github.com/glitchlend/Smiths-Hub
+
+---
+
+Smith's Hub — Vehicle Performance & Candy Automation
