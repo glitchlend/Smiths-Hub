@@ -754,32 +754,79 @@ local function clawStep()
     end
 end
 
+
 -- =========================================
--- AUTO COLLECT (SAVED MARKERS ONLY)
+-- AUTO COLLECT V15.1
+-- Visible + Saved candy markers
+-- Wait for claw to close + 2-second delay
 -- =========================================
+
+local NEXT_CANDY_DELAY = 2
+local CLAW_CLOSE_CONFIRM = 0.4
+local TARGET_RETRY_DELAY = 30
+
+local clawClosedSince = nil
+local nextCandyAt = 0
+
+-- Detect the entire claw interface, including
+-- moments when its moving objects disappear.
+-- This is more reliable than getClaw() alone.
+
+local function isClawUIOpen()
+    local g = PG:FindFirstChild("CandyClaw")
+
+    if not g or not g:IsA("ScreenGui") then
+        return false
+    end
+
+    if not g.Enabled then
+        return false
+    end
+
+    local panel = g:FindFirstChild("Panel", true)
+
+    if panel and panel:IsA("GuiObject") then
+        return guiVisible(panel)
+    end
+
+    -- If the GUI is enabled but the panel has
+    -- temporarily disappeared, be conservative.
+    return true
+end
 
 local function stopCollection()
     currentTarget = nil
     collectPhase = "idle"
+    collectStarted = 0
+    clawClosedSince = nil
+    nextCandyAt = 0
     collectStatus = "Auto Collect: OFF"
 end
 
-local function findSavedTarget()
+-- BOTH VISIBLE AND SAVED MARKERS ARE ELIGIBLE
+local function findCollectTarget()
     local hum = getHumanoid()
     local root = hum and hum.RootPart
 
     if not root then return nil end
 
-    local bestEntry
+    local bestEntry = nil
     local bestDistance = math.huge
     local now = os.clock()
 
-    for _,entry in pairs(entries) do
-        if entry.state == "saved"
-            and now >= (entry.nextAttempt or 0) then
+    for _, entry in pairs(entries) do
+
+        local eligible =
+            entry.state == "visible"
+            or entry.state == "saved"
+
+        local available =
+            now >= (entry.nextAttempt or 0)
+
+        if eligible and available and entry.position then
 
             local distance =
-                (root.Position-entry.position).Magnitude
+                (root.Position - entry.position).Magnitude
 
             if distance < bestDistance then
                 bestDistance = distance
@@ -793,16 +840,48 @@ end
 
 local function skipTarget(reason)
     if currentTarget then
-        currentTarget.nextAttempt = os.clock()+30
+        currentTarget.nextAttempt =
+            os.clock() + TARGET_RETRY_DELAY
     end
 
     currentTarget = nil
     collectPhase = "idle"
+    collectStarted = 0
+    clawClosedSince = nil
+
     collectStatus = reason
 end
 
+local function finishClaw()
+    local now = os.clock()
+
+    if currentTarget then
+        -- Prevent immediate retries of the same candy.
+        currentTarget.nextAttempt =
+            now + TARGET_RETRY_DELAY
+
+        -- If the actual candy prompt disappeared,
+        -- remove its marker as in the previous version.
+        if not currentTarget.prompt then
+            removeEntry(currentTarget.id)
+        end
+    end
+
+    currentTarget = nil
+
+    -- IMPORTANT:
+    -- No further teleporting until this expires.
+    collectPhase = "cooldown"
+    nextCandyAt = now + NEXT_CANDY_DELAY
+    clawClosedSince = nil
+
+    collectStatus = "Claw complete | Waiting 2 seconds"
+end
+
 local function collectionStep()
-    if not C.AutoCollect then return end
+    if not C.AutoCollect then
+        return
+    end
 
     local hum = getHumanoid()
     local root = hum and hum.RootPart
@@ -813,83 +892,195 @@ local function collectionStep()
     end
 
     local now = os.clock()
-    local activeClaw = getClaw() ~= nil
+    local clawOpen = isClawUIOpen()
+
+    -- =====================================
+    -- 1. WAIT FOR CURRENT CLAW TO FINISH
+    -- =====================================
 
     if collectPhase == "playing" then
-        if not activeClaw then
-            if currentTarget then
-                if not currentTarget.prompt then
-                    removeEntry(currentTarget.id)
-                else
-                    currentTarget.nextAttempt = now+30
-                end
-            end
 
-            currentTarget = nil
-            collectPhase = "idle"
-            collectStatus = "Claw attempt finished"
+        if clawOpen then
+            -- The claw is still on screen.
+            -- Never teleport while it's open.
+            clawClosedSince = nil
+
+            collectStatus =
+                "Playing claw | Waiting for completion"
+
+            return
         end
+
+        -- It has disappeared.
+        -- Confirm it stays closed briefly,
+        -- avoiding false transitions between screens.
+
+        if not clawClosedSince then
+            clawClosedSince = now
+
+            collectStatus =
+                "Claw closing | Confirming completion"
+
+            return
+        end
+
+        if now - clawClosedSince < CLAW_CLOSE_CONFIRM then
+            return
+        end
+
+        -- Claw has now fully closed.
+        finishClaw()
         return
     end
+
+    -- =====================================
+    -- 2. POST-CLAW COOLDOWN
+    -- =====================================
+
+    if collectPhase == "cooldown" then
+
+        -- If a result/payout screen reopens,
+        -- wait for that too.
+        if clawOpen then
+            collectPhase = "playing"
+            clawClosedSince = nil
+
+            collectStatus =
+                "Waiting for claw/result screen to close"
+
+            return
+        end
+
+        local remaining = nextCandyAt - now
+
+        if remaining > 0 then
+            collectStatus = string.format(
+                "Next candy in %.1f seconds",
+                remaining
+            )
+            return
+        end
+
+        -- Two seconds completed.
+        collectPhase = "idle"
+        nextCandyAt = 0
+
+        collectStatus = "Ready for next candy"
+    end
+
+    -- =====================================
+    -- 3. WAIT FOR MINIGAME TO OPEN
+    -- =====================================
 
     if collectPhase == "triggered" then
-        if activeClaw then
+
+        if clawOpen then
             collectPhase = "playing"
+            clawClosedSince = nil
+
             collectStatus = "Playing claw minigame"
-        elseif now-collectStarted > 12 then
-            skipTarget("Minigame timeout; skipping")
+            return
         end
+
+        if now - collectStarted > 12 then
+            skipTarget("Minigame timeout | Skipping")
+        else
+            collectStatus = "Waiting for claw to open"
+        end
+
         return
     end
 
-    if activeClaw then
-        collectStatus = "Waiting for current minigame"
+    -- =====================================
+    -- 4. WAIT IF ANY CLAW IS ACTIVE
+    -- =====================================
+
+    if clawOpen then
+        collectStatus =
+            "Waiting for existing claw minigame"
+
         return
     end
+
+    -- =====================================
+    -- 5. CHOOSE NEXT CANDY
+    -- =====================================
 
     if not currentTarget then
-        currentTarget = findSavedTarget()
+
+        currentTarget = findCollectTarget()
 
         if not currentTarget then
-            collectStatus = "No saved candy markers"
+            collectStatus =
+                "No available visible or saved candies"
+
             return
         end
 
         collectStarted = now
         collectPhase = "travelling"
 
+        -- Travel only to a previously detected marker.
+        -- No map scanning or unknown locations.
+
         root.CFrame = CFrame.new(
             currentTarget.position
-            + Vector3.new(0,3,0)
+            + Vector3.new(0, 3, 0)
         )
 
         root.AssemblyLinearVelocity = Vector3.zero
 
-        collectStatus = "Travelling to saved candy"
+        collectStatus = (
+            currentTarget.state == "visible"
+            and "Travelling to visible candy"
+            or "Travelling to saved candy"
+        )
+
         return
     end
 
+    -- =====================================
+    -- 6. ACTIVATE CANDY PROMPT
+    -- =====================================
+
     if collectPhase == "travelling" then
-        if now-collectStarted < 0.7 then
+
+        -- Give the game time to stream objects.
+        if now - collectStarted < 0.7 then
             return
         end
 
-        if currentTarget.prompt
-            and currentTarget.prompt.Parent
-            and currentTarget.prompt.Enabled then
+        -- Never activate another candy
+        -- while a claw interface is active.
+        if isClawUIOpen() then
+            collectStatus =
+                "Waiting for existing claw to finish"
+
+            return
+        end
+
+        local prompt = currentTarget.prompt
+
+        if prompt
+            and prompt.Parent
+            and prompt.Enabled then
 
             if type(fireproximityprompt) ~= "function" then
-                skipTarget("Executor lacks fireproximityprompt")
+                skipTarget(
+                    "Executor lacks fireproximityprompt"
+                )
                 return
             end
 
-            local prompt = currentTarget.prompt
             local pos = promptPosition(prompt)
 
             if pos then
                 root.CFrame = CFrame.new(
-                    pos+Vector3.new(0,2,0)
+                    pos + Vector3.new(0, 2, 0)
                 )
+
+                root.AssemblyLinearVelocity =
+                    Vector3.zero
             end
 
             local ok = pcall(function()
@@ -899,18 +1090,30 @@ local function collectionStep()
             if ok then
                 collectPhase = "triggered"
                 collectStarted = now
-                collectStatus = "Opening saved candy"
+
+                collectStatus =
+                    "Activating candy | Waiting for claw"
             else
-                skipTarget("Prompt failed; skipping")
+                skipTarget(
+                    "Candy prompt failed | Skipping"
+                )
             end
 
-        elseif now-collectStarted > 8 then
-            skipTarget("Candy not streamed; skipping")
+            return
+        end
+
+        -- Candy may not have streamed yet.
+        if now - collectStarted > 8 then
+            skipTarget(
+                "Candy not loaded | Trying another"
+            )
         else
-            collectStatus = "Waiting for saved candy to load"
+            collectStatus =
+                "Waiting for candy to stream"
         end
     end
 end
+
 
 -- =========================================
 -- GUI CREATION
