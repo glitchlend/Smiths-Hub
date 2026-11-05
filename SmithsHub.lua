@@ -391,6 +391,30 @@ local function promptPosition(prompt)
     return nil
 end
 
+local collectedPositions = {}
+
+local function alreadyCollected(pos)
+    for _,savedPos in ipairs(collectedPositions) do
+        if (savedPos-pos).Magnitude <= C.MergeRadius then
+            return true
+        end
+    end
+    return false
+end
+
+
+local collectedPositions = {}
+
+local function alreadyCollected(pos)
+    for _, savedPos in ipairs(collectedPositions) do
+        if (savedPos - pos).Magnitude <= C.MergeRadius then
+            return true
+        end
+    end
+    return false
+end
+
+
 local function findEntry(pos)
     for _,entry in pairs(entries) do
         if (entry.position-pos).Magnitude
