@@ -932,7 +932,7 @@ local gui = make("ScreenGui",guiParent,{
 })
 
 local window = make("Frame",gui,{
-    Size=UDim2.fromOffset(660,290),
+    Size=UDim2.fromOffset(660,350),
     Position=UDim2.new(0.5,-330,0.32,0),
     BackgroundColor3=BG,
     BorderSizePixel=0,
@@ -1676,6 +1676,22 @@ local clawInfo=make("TextLabel",farmPage,{
     TextSize=12,
     TextXAlignment=Enum.TextXAlignment.Left
 })
+
+-- STREAMING ENABLED NOTICE
+local streamingNotice = make("TextLabel",farmPage,{
+    Name="StreamingNotice",
+    Text="⚠ STREAMING ENABLED: You must get close enough to candies for them to load before ESP can detect them and Auto Collect can collect them.",
+    Position=UDim2.fromOffset(12,181),
+    Size=UDim2.new(1,-24,0,40),
+    BackgroundColor3=DARK,
+    BorderSizePixel=0,
+    TextColor3=GREY,
+    Font=Enum.Font.GothamMedium,
+    TextSize=11,
+    TextWrapped=true,
+    TextXAlignment=Enum.TextXAlignment.Center
+})
+corner(streamingNotice,7)
 
 connect(minimize.MouseButton1Click,function()
     mini.Position=window.Position
