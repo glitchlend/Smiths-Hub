@@ -1654,10 +1654,10 @@ local function slider(parent,x,y,width,title,callback)
     local function set(v)
      v=math.clamp(
          math.floor(v*10+0.5)/10,
-         0.1,10
+         0.1,20
 )
 
-        local alpha=(v-0.1)/9.9
+        	local alpha=(v-0.1)/19.9
 
         fill.Size=UDim2.fromScale(alpha,1)
         knob.Position=UDim2.new(alpha,-9,0.5,-9.5)
@@ -1678,7 +1678,7 @@ local function slider(parent,x,y,width,title,callback)
             0,1
         )
 
-        set(0.1+alpha*9.9)
+        set(0.1+alpha*19.9)
     end
 
     connect(hitbox.InputBegan,function(input)
