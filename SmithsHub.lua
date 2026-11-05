@@ -1855,13 +1855,6 @@ toggleButton(422,"AUTO COLLECT",false,function(v)
     end
 end)
 
-    if not v then
-        stopCollection()
-    else
-        collectStatus="Searching saved markers"
-    end
-end)
-
 local farmInfo=make("TextLabel",farmPage,{
     Text="VISIBLE: 0  |  SAVED: 0",
     Position=UDim2.fromOffset(12,89),
