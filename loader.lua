@@ -1,8 +1,9 @@
--- SMITH'S HUB — GAME SELECTOR
+-- SMITH'S HUB LOADER V1.1
 
 local BASE = "https://raw.githubusercontent.com/glitchlend/Smiths-Hub/main/"
 local LOGO_URL = BASE .. "assets/logo.png"
 local LOGO_FILE = "SmithsHub_logo.png"
+local DOWNLOAD_TIMEOUT = 20
 
 local TweenService = game:GetService("TweenService")
 local Input = game:GetService("UserInputService")
@@ -17,6 +18,7 @@ end
 
 local alive = true
 local busy = false
+local activeLoad = nil
 local connections = {}
 local tweens = {}
 local buttons = {}
@@ -69,13 +71,14 @@ end
 local gui = make("ScreenGui", {
     Name = "SmithsHubLoader",
     ResetOnSpawn = false,
-    DisplayOrder = 100,
+    DisplayOrder = 10000,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, parent)
 
 function api.Destroy()
     if not alive then return end
     alive = false
+    activeLoad = nil
 
     for _, connection in ipairs(connections) do
         connection:Disconnect()
@@ -172,8 +175,8 @@ local close = make("TextButton", {
 corner(close, 8)
 
 listen(close.Activated, function()
-    -- Once execution begins, closing this menu cannot cancel that script.
-    if not busy then api.Destroy() end
+    -- Closing cancels pending downloads; running game code owns its cleanup.
+    api.Destroy()
 end)
 
 local dragging, dragInput, dragStart, dragOrigin
@@ -278,7 +281,8 @@ corner(progress, 3)
 -- Download the actual PNG, then register it as a local image asset.
 task.spawn(function()
     local ok, err = pcall(function()
-        local registerAsset = getcustomasset or getsynasset
+        local registerAsset = type(getcustomasset) == "function"
+            and getcustomasset or getsynasset
         if type(registerAsset) ~= "function"
             or type(writefile) ~= "function" then
             error("This executor lacks writefile/getcustomasset support.")
@@ -298,10 +302,13 @@ task.spawn(function()
         logo.Image = asset
         logo.Visible = true
 
-        ContentProvider:PreloadAsync({logo})
+        local fetched = false
+        ContentProvider:PreloadAsync({asset}, function(_, result)
+            if result == Enum.AssetFetchStatus.Success then fetched = true end
+        end)
 
         if not alive then return end
-        if not logo.IsLoaded then
+        if not fetched and not logo.IsLoaded then
             error("The image was registered but could not be displayed.")
         end
         fallback.Visible = false
@@ -318,7 +325,7 @@ end)
 
 local function setBusy(value)
     busy = value
-    close.TextTransparency = value and 0.65 or 0
+    close.TextTransparency = 0
 
     for _, b in ipairs(buttons) do
         b.AutoButtonColor = not value
@@ -326,70 +333,96 @@ local function setBusy(value)
     end
 end
 
+-- Ignore whitespace and both short and long Lua comments.
+local function hasExecutableCode(source: string): boolean
+    local i = 1
+    while i <= #source do
+        local space = source:sub(i):match("^%s+")
+        if space then
+            i += #space
+        elseif source:sub(i, i + 1) == "--" then
+            local equals = source:sub(i + 2):match("^%[(=*)%[")
+            if equals ~= nil then
+                local ending = "]" .. equals .. "]"
+                local _, last = source:find(ending, i + 4 + #equals, true)
+                if not last then return false end
+                i = last + 1
+            else
+                local newline = source:find("[\r\n]", i + 2)
+                if not newline then return false end
+                i = newline + 1
+            end
+        else
+            return true
+        end
+    end
+    return false
+end
+
 local function loadGame(name, path)
     if busy or not alive then return end
+    local request = {Stage = "download"}
+    activeLoad = request
     setBusy(true)
-
     status.TextColor3 = CYAN
     status.Text = "Downloading " .. name .. "..."
     progress.Size = UDim2.fromScale(0, 1)
     tween(progress, 0.35, {Size = UDim2.fromScale(0.3, 1)})
 
-    task.spawn(function()
-        local stage = "download"
+    local function current()
+        return alive and activeLoad == request
+    end
 
+    task.delay(DOWNLOAD_TIMEOUT, function()
+        if not current() or request.Stage ~= "download" then return end
+        activeLoad = nil
+        setBusy(false)
+        status.TextColor3 = Color3.fromRGB(255, 135, 135)
+        status.Text = "Download timed out. Select your game to retry."
+        tween(progress, 0.2, {Size = UDim2.fromScale(0, 1)})
+    end)
+
+    task.spawn(function()
         local ok, err = pcall(function()
             local source = game:HttpGet(BASE .. path)
-            if not alive then return end
-
-            if type(source) ~= "string" or not source:find("%S") then
-                error("GitHub returned an empty file.")
+            if not current() then return end
+            if type(source) ~= "string" then
+                error("GitHub did not return script text.")
             end
-
-            if not source:find("\n")
-                and source:match("^%s*%-%-") then
-                error("The GitHub file still contains only a placeholder.")
+            source = source:gsub("^\239\187\191", "")
+            if not hasExecutableCode(source) then
+                error("The GitHub file is empty or contains only comments.")
             end
-
-            stage = "compile"
+            request.Stage = "compile"
             status.Text = "Preparing " .. name .. "..."
             tween(progress, 0.25, {Size = UDim2.fromScale(0.65, 1)})
-
             if type(loadstring) ~= "function" then
                 error("This executor does not provide loadstring.")
             end
-
-            local runScript, compileError = loadstring(
-                source, "@SmithsHub/" .. path
-            )
-            if not runScript then
-                error(compileError or "Script could not be compiled.")
-            end
-
-            if not alive then return end
-            stage = "run"
+            local runScript, compileError = loadstring(source, "@SmithsHub/" .. path)
+            if not runScript then error(compileError or "Script could not be compiled.") end
+            if not current() then return end
+            request.Stage = "run"
             status.Text = "Starting " .. name .. "..."
             runScript()
         end)
 
-        if not alive then return end
-
+        if not current() then return end
         if not ok then
-            warn("[Smiths Hub] " .. name .. " " .. stage .. " error: " .. tostring(err))
+            warn("[Smiths Hub] " .. name .. " " .. request.Stage .. " error: " .. tostring(err))
+            activeLoad = nil
             status.TextColor3 = Color3.fromRGB(255, 135, 135)
-            status.Text = name .. " failed to " .. stage
-                .. ". See console for details."
+            status.Text = name .. " failed to " .. request.Stage .. ". See console."
             tween(progress, 0.2, {Size = UDim2.fromScale(0, 1)})
             setBusy(false)
             return
         end
-
+        request.Stage = "done"
         status.TextColor3 = CYAN
         status.Text = name .. " loaded."
         tween(progress, 0.2, {Size = UDim2.fromScale(1, 1)})
         task.wait(0.35)
-
-        if alive then api.Destroy() end
+        if current() then api.Destroy() end
     end)
 end
 
