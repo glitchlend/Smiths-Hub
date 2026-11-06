@@ -1,7 +1,5 @@
--- SMITH'S TWISTED V3.1
--- Complete standalone: distance + independent minimised icon.
--- Drag the title to move the menu.
--- Minimise with −, then drag/click S independently.
+-- SMITH'S TWISTED V3.2
+-- Actual logo + X to unload + independent minimised icon.
 -- Measurements marked ~ use unverified game-scale assumptions.
 
 local CFG = {
@@ -13,10 +11,15 @@ local CFG = {
     MaxTrailSegments = 90,
 }
 
+local LOGO_URL =
+    "https://raw.githubusercontent.com/glitchlend/Smiths-Hub/main/assets/logo.png"
+local LOGO_FILE = "SmithsHub_Twisted_Logo.png"
+
 local Players = game:GetService("Players")
 local Run = game:GetService("RunService")
 local Input = game:GetService("UserInputService")
 local Lighting = game:GetService("Lighting")
+local ContentProvider = game:GetService("ContentProvider")
 local player = Players.LocalPlayer
 
 local env = getgenv and getgenv() or _G
@@ -107,11 +110,13 @@ local function label(parentObj, message, position, size, fontSize)
 end
 
 local title = label(
-    menu, "SMITH'S TWISTED V3.1",
-    UDim2.fromOffset(5, 0),
-    UDim2.new(1, -45, 0, 35),
-    15
+    menu, "SMITH'S TWISTED V3.2",
+    UDim2.fromOffset(8, 0),
+    UDim2.new(1, -80, 0, 35),
+    13
 )
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextWrapped = false
 
 local icon = make("TextButton", {
     Name = "MinimisedIcon",
@@ -124,8 +129,22 @@ local icon = make("TextButton", {
     Size = UDim2.fromOffset(46, 46),
     Position = UDim2.new(0, 20, 0.2, -52),
     Visible = false,
+    ClipsDescendants = true,
 }, gui)
 round(icon)
+
+local iconLogo = make("ImageLabel", {
+    Name = "Logo",
+    BackgroundTransparency = 1,
+    Size = UDim2.fromScale(1, 1),
+    Position = UDim2.fromOffset(0, 0),
+    Image = "",
+    ScaleType = Enum.ScaleType.Fit,
+    Visible = false,
+    Active = false,
+    ZIndex = 2,
+}, icon)
+round(iconLogo)
 
 local minimise = make("TextButton", {
     Name = "Minimise",
@@ -136,10 +155,24 @@ local minimise = make("TextButton", {
     BackgroundColor3 = Color3.fromRGB(36, 43, 55),
     BorderSizePixel = 0,
     Size = UDim2.fromOffset(28, 26),
-    Position = UDim2.new(1, -34, 0, 4),
+    Position = UDim2.new(1, -66, 0, 4),
     ZIndex = 5,
 }, menu)
 round(minimise)
+
+local close = make("TextButton", {
+    Name = "Close",
+    Text = "×",
+    Font = Enum.Font.GothamBold,
+    TextSize = 22,
+    TextColor3 = Color3.fromRGB(255, 255, 255),
+    BackgroundColor3 = Color3.fromRGB(155, 42, 52),
+    BorderSizePixel = 0,
+    Size = UDim2.fromOffset(28, 26),
+    Position = UDim2.new(1, -34, 0, 4),
+    ZIndex = 5,
+}, menu)
+round(close)
 
 listen(minimise.Activated, function()
     menu.Visible = false
@@ -210,7 +243,7 @@ local function button(text, y, callback)
     return b
 end
 
--- Fullbright restores the captured state when disabled/unloaded.
+-- Fullbright restores captured settings on disable/unload.
 local savedLight
 local savedAtmos = {}
 
@@ -326,7 +359,11 @@ function api.Destroy()
         end
     end
 
-    restoreLight()
+    local ok, err = pcall(restoreLight)
+    if not ok then
+        warn("[SmithTwisted] Lighting restore: " .. tostring(err))
+    end
+
     gui:Destroy()
     table.clear(records)
     table.clear(chosen)
@@ -336,7 +373,60 @@ end
 
 env[KEY] = api
 button("Unload", 242, api.Destroy)
+listen(close.Activated, api.Destroy)
 listen(gui.Destroying, api.Destroy)
+
+-- Load the actual PNG from GitHub.
+-- Keep the local image file so reopening the icon can still load it.
+task.spawn(function()
+    local ok, err = pcall(function()
+        local assetLoader = getcustomasset or getsynasset
+
+        if type(writefile) ~= "function"
+            or type(assetLoader) ~= "function" then
+            error("Executor does not support writefile/getcustomasset.")
+        end
+
+        local bytes = game:HttpGet(LOGO_URL)
+        if not alive then return end
+
+        if type(bytes) ~= "string"
+            or bytes:sub(1, 8) ~= "\137PNG\r\n\26\n" then
+            error("assets/logo.png did not return a valid PNG.")
+        end
+
+        writefile(LOGO_FILE, bytes)
+        local asset = assetLoader(LOGO_FILE)
+
+        if type(asset) ~= "string" or asset == "" then
+            error("Executor did not return an image asset.")
+        end
+        if not alive then return end
+
+        iconLogo.Image = asset
+        local failed = false
+
+        ContentProvider:PreloadAsync({iconLogo}, function(_, status)
+            if status ~= Enum.AssetFetchStatus.Success then
+                failed = true
+            end
+        end)
+
+        if not alive then return end
+        if failed or not iconLogo.IsLoaded then
+            error("The logo downloaded but could not be displayed.")
+        end
+
+        icon.Text = ""
+        iconLogo.Visible = true
+    end)
+
+    if not ok and alive then
+        icon.Text = "S"
+        iconLogo.Visible = false
+        warn("[SmithTwisted] Logo unavailable: " .. tostring(err))
+    end
+end)
 
 local status = label(
     menu, "Select the storms you want to track",
@@ -728,7 +818,6 @@ local function update()
                     and r.Velocity.Magnitude
                         * CFG.MetresPerStud * 2.236936
 
-                -- Horizontal distance from the player to the storm.
                 local distance
                 if root and root:IsA("BasePart") then
                     distance = flat(pos - root.Position).Magnitude
@@ -846,11 +935,11 @@ listen(Run.Heartbeat, function(dt)
         status.Text = "Update error — see console"
         if tostring(err) ~= lastError then
             lastError = tostring(err)
-            warn("[SmithTwisted V3.1] " .. lastError)
+            warn("[SmithTwisted V3.2] " .. lastError)
         end
     else
         lastError = nil
     end
 end)
 
-print("[SmithTwisted] V3.1 loaded. All feature toggles start OFF.")
+print("[SmithTwisted] V3.2 loaded. All feature toggles start OFF.")
