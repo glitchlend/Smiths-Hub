@@ -1871,14 +1871,6 @@ connect(mini.MouseButton1Click,function()
     end
 end)
 
-connect(mini.MouseButton1Click,function()
-    if not miniMoved() then
-        window.Position=mini.Position
-        mini.Visible=false
-        window.Visible=true
-    end
-end)
-
 -- =========================================
 -- UPDATE LOOPS
 -- =========================================
