@@ -1,5 +1,5 @@
 
--- SMITH'S HUB V15.3
+-- SMITH'S HUB V15.4
 -- github.com/glitchlend/Smiths-Hub
 -- Movement: Acceleration + Gear Speed
 -- Auto Farm: ESP + Auto Claw + Auto Collect (visible + saved)
@@ -19,6 +19,7 @@ local PG = Player:WaitForChild("PlayerGui")
 local ENV = (getgenv and getgenv()) or _G
 
 for _, name in ipairs({
+    "SmithHubV154Unload",
     "SmithHubV153Unload",
     "SmithHubV152Unload",
     "SmithHubV15Unload",
@@ -37,7 +38,7 @@ end
 local LOGO_URL =
     "https://raw.githubusercontent.com/glitchlend/Smiths-Hub/main/assets/logo.png"
 
-local TEMP_LOGO = "SmithsHub_Logo_Temp.png"
+local LOGO_FILE = "SmithsHub_YSO_Logo.png"
 
 local C = {
     Acceleration = 1,
@@ -54,9 +55,9 @@ local C = {
     TapTolerance = 5,
     CrossingTolerance = 8,
     TapCooldown = 2,
-    RetryMove = 2,
+    RetrySpeed = 30, -- Pixels per second, independent of FPS.
     RetryDistance = 35,
-    RetryFrames = 3,
+    RetryDuration = 0.05,
 
     -- Auto Collect waits for the claw/result screen to close, then settles.
     NextCandyDelay = 2,
@@ -67,6 +68,9 @@ local C = {
 local alive = true
 local connections = {}
 local session = nil
+local vehicleLoad = nil
+local collectionBusy = false
+local collectionGeneration = 0
 local entries = {}
 local entryCounter = 0
 
@@ -145,22 +149,22 @@ local POWER_FIELDS = {
 }
 
 local function restoreVehicle()
+    -- Invalidates any outstanding require before restoring the active session.
+    vehicleLoad = nil
     local s = session
-    if not s then return end
-
-    pcall(function()
-        for field,value in pairs(s.power) do
-            s.tune[field] = value
-        end
-
-        for i,ratio in ipairs(s.ratios) do
-            s.tune.Ratios[i] = ratio
-        end
-
-        s.tune.SpeedLimit = s.speedLimit
-    end)
-
     session = nil
+    if not s then return end
+    local function restore(fn)
+        local ok, err = pcall(fn)
+        if not ok then warn("[Smith's Hub] Vehicle restore:", err) end
+    end
+    for field, value in pairs(s.power) do
+        restore(function() s.tune[field] = value end)
+    end
+    for i, ratio in ipairs(s.ratios) do
+        restore(function() s.tune.Ratios[i] = ratio end)
+    end
+    restore(function() s.tune.SpeedLimit = s.speedLimit end)
 end
 
 local function findVehicle()
@@ -213,60 +217,57 @@ local function chassisValues(car)
     return fallback
 end
 
-local function loadVehicle(car,seat,module)
-    local values = chassisValues(car)
-    if not values then return false end
+local function loadVehicle(car, seat, module)
+    if not alive or session or vehicleLoad then return end
+    if not chassisValues(car) then return end
+    local job = {car=car, seat=seat, module=module}
+    vehicleLoad = job
 
-    local ok,tune = pcall(require,module)
-
-    if not ok or type(tune) ~= "table"
-        or type(tune.Ratios) ~= "table" then
-        return false
-    end
-
-    local neutralIndex
-
-    for i,ratio in ipairs(tune.Ratios) do
-        if type(ratio) == "number"
-            and math.abs(ratio) < 0.00001 then
-            neutralIndex = i
-            break
+    task.spawn(function()
+        local ok, tune = pcall(require, module)
+        -- require may yield: never revive an unloaded or superseded session.
+        if not alive or vehicleLoad ~= job then return end
+        local currentCar, currentSeat, currentModule = findVehicle()
+        if currentCar ~= car or currentSeat ~= seat or currentModule ~= module then
+            vehicleLoad = nil
+            return
         end
-    end
-
-    if not neutralIndex then return false end
-
-    local ratios = {}
-    local power = {}
-
-    for i,ratio in ipairs(tune.Ratios) do
-        ratios[i] = ratio
-    end
-
-    for _,field in ipairs(POWER_FIELDS) do
-        if type(tune[field]) == "number" then
-            power[field] = tune[field]
+        local values = chassisValues(car)
+        if not ok or type(tune) ~= "table" or type(tune.Ratios) ~= "table"
+            or not values or not values.Parent then
+            vehicleLoad = nil
+            return
         end
-    end
 
-    if next(power) == nil then
-        return false
-    end
-
-    session = {
-        car=car,
-        seat=seat,
-        module=module,
-        values=values,
-        tune=tune,
-        ratios=ratios,
-        power=power,
-        speedLimit=tune.SpeedLimit,
-        firstGearIndex=neutralIndex+1,
-        currentPower=1
-    }
-
-    return true
+        local neutralIndex
+        local ratios, power = {}, {}
+        for i, ratio in ipairs(tune.Ratios) do
+            if type(ratio) ~= "number" or ratio ~= ratio
+                or math.abs(ratio) == math.huge then
+                vehicleLoad = nil
+                return
+            end
+            ratios[i] = ratio
+            if not neutralIndex and math.abs(ratio) < 0.00001 then
+                neutralIndex = i
+            end
+        end
+        for _, field in ipairs(POWER_FIELDS) do
+            local value = tune[field]
+            if type(value) == "number" and value == value
+                and math.abs(value) < math.huge then power[field] = value end
+        end
+        if not neutralIndex or next(power) == nil then
+            vehicleLoad = nil
+            return
+        end
+        session = {
+            car=car, seat=seat, module=module, values=values, tune=tune,
+            ratios=ratios, power=power, speedLimit=tune.SpeedLimit,
+            firstGearIndex=neutralIndex+1, currentPower=1,
+        }
+        vehicleLoad = nil
+    end)
 end
 
 local function updateVehicle(s,dt)
@@ -413,6 +414,7 @@ local function findEntry(pos)
             return entry
         end
     end
+    return nil
 end
 
 local function createMarker(entry)
@@ -429,6 +431,7 @@ local function createMarker(entry)
 
     local billboard = make("BillboardGui",PG,{
         Name="SmithsHubCandyESP",
+        ResetOnSpawn=false,
         Adornee=holder,
         Size=UDim2.fromOffset(150,40),
         StudsOffsetWorldSpace=Vector3.new(0,2.5,0),
@@ -560,7 +563,8 @@ end
 
 local clawPhase = "ready"
 local wasClawVisible = false
-local recoveryFrames = 0
+local recoveryTime = 0
+local recoveryLastT = nil
 local recoveryLastX = nil
 local lastClawX = nil
 local lastClawT = nil
@@ -570,7 +574,8 @@ local lastTapAt = -100
 local function resetClaw()
     clawPhase = "ready"
     wasClawVisible = false
-    recoveryFrames = 0
+    recoveryTime = 0
+    recoveryLastT = nil
     recoveryLastX = nil
     lastClawX = nil
     lastClawT = nil
@@ -707,28 +712,22 @@ local function clawStep()
     local gap = clawX-candyX
 
     if clawPhase == "recovering" then
-        local moved = recoveryLastX
-            and math.abs(clawX-recoveryLastX)
-            or 0
-
-        recoveryLastX = clawX
-
+        local dt = recoveryLastT and now - recoveryLastT or 0
+        local moved = recoveryLastX and math.abs(clawX-recoveryLastX) or 0
+        local speed = dt > 0 and moved / dt or 0
+        recoveryLastX, recoveryLastT = clawX, now
         if now-lastTapAt >= C.TapCooldown
             and math.abs(gap) >= C.RetryDistance
-            and moved >= C.RetryMove then
-            recoveryFrames += 1
+            and speed >= C.RetrySpeed then
+            recoveryTime += math.min(dt, 0.1)
         else
-            recoveryFrames = 0
+            recoveryTime = 0
         end
-
-        if recoveryFrames >= C.RetryFrames then
+        if recoveryTime >= C.RetryDuration then
             clawPhase = "ready"
-            lastClawX = nil
-            lastClawT = nil
-            lastDifference = nil
-            recoveryFrames = 0
+            lastClawX, lastClawT, lastDifference = nil, nil, nil
+            recoveryTime = 0
         end
-
         return
     end
 
@@ -782,7 +781,8 @@ local function clawStep()
     if tapClaw(x,y) then
         clawPhase = "recovering"
         recoveryLastX = clawX
-        recoveryFrames = 0
+        recoveryLastT = now
+        recoveryTime = 0
         clawStatus = "Claw tap sent"
     end
 end
@@ -831,7 +831,86 @@ local function isClawUIOpen()
     return panel == nil
 end
 
+-- Only explicit outcome evidence can permanently clear a candy.
+local evidence = nil
+local CANDY_COUNTERS = {
+    candy=true, candies=true, candycount=true, candiescollected=true,
+    halloweencandy=true, halloweencandies=true,
+}
+local function positiveResult(text)
+    local t = text:lower():gsub("<[^>]->", "")
+    for _, word in ipairs({"fail", "miss", "lost", "cancel", "not collected", "try again",
+        "unsuccess", "not successful", "nothing", "no candy", "no reward"}) do
+        if t:find(word, 1, true) then return false end
+    end
+    if t:find("%f[%d]0%s+cand") then return false end
+    if t:find("chance", 1, true) or t:find("success rate", 1, true)
+        or t:find("if you", 1, true) then return false end
+    return t:match("^%s*success%s*$") ~= nil
+        or t:match("^%s*success[%p%s]") ~= nil
+        or t:match("^%s*successful%s*$") ~= nil
+        or t:match("^%s*successful[%p%s]") ~= nil
+        or t:find("you won", 1, true) ~= nil
+        or t:find("you caught", 1, true) ~= nil
+        or t:find("candy collected", 1, true) ~= nil
+        or t:find("collected candy", 1, true) ~= nil
+        or t:find("you collected", 1, true) ~= nil
+end
+
+local function visibleResultTexts()
+    local result = {}
+    local g = PG:FindFirstChild("CandyClaw")
+    if not g then return result end
+    for _, obj in ipairs(g:GetDescendants()) do
+        if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and guiVisible(obj) then
+            result[obj] = obj.Text
+        end
+    end
+    return result
+end
+
+local function beginEvidence(entry)
+    local state = {entry=entry, texts=visibleResultTexts(), counters={}, flags={}, success=false}
+    for _, obj in ipairs(Player:GetDescendants()) do
+        local name = obj.Name:lower():gsub("[^%w]", "")
+        if CANDY_COUNTERS[name] and (obj:IsA("IntValue") or obj:IsA("NumberValue"))
+            and not obj:IsDescendantOf(PG) then state.counters[obj] = obj.Value end
+    end
+    local node = entry.prompt
+    while node and node ~= WS do
+        for _, key in ipairs({"Collected", "CollectionSuccess"}) do
+            table.insert(state.flags, {object=node, key=key, value=node:GetAttribute(key)})
+        end
+        if node:IsA("Model") then break end
+        node = node.Parent
+    end
+    evidence = state
+end
+
+local function observeEvidence()
+    local state = evidence
+    if not state or state.success or state.entry ~= currentTarget then return end
+    for obj, before in pairs(state.counters) do
+        if obj.Parent and obj.Value > before then state.success=true; return end
+    end
+    for _, flag in ipairs(state.flags) do
+        if flag.object.Parent and flag.value ~= true
+            and flag.object:GetAttribute(flag.key) == true then
+            state.success=true
+            return
+        end
+    end
+    for obj, text in pairs(visibleResultTexts()) do
+        if text ~= state.texts[obj] and positiveResult(text) then
+            state.success=true
+            return
+        end
+    end
+end
+
 local function stopCollection()
+    collectionGeneration += 1
+    evidence = nil
     currentTarget = nil
     collectPhase = "idle"
     collectStarted = 0
@@ -874,6 +953,7 @@ local function findCollectTarget()
 end
 
 local function skipTarget(reason)
+    evidence = nil
     if currentTarget then
         currentTarget.nextAttempt =
             os.clock() + C.TargetRetryDelay
@@ -888,34 +968,32 @@ end
 
 local function finishClaw()
     local now = os.clock()
-
+    local confirmed = currentTarget and evidence and evidence.success
+        and evidence.entry == currentTarget
     if currentTarget then
-        local pos = currentTarget.position
-
-        -- Remember this location, so a streamed prompt cannot add it again.
-        if pos and not alreadyCollected(pos) then
-            table.insert(collectedPositions,pos)
-        end
-
-        -- Delete every entry close to the completed target, including
-        -- saved entries. Don't change entries while iterating them.
-        local removeIds = {}
-        for id,entry in pairs(entries) do
-            if id == currentTarget.id or (pos and
-                (entry.position-pos).Magnitude <= C.MergeRadius) then
-                table.insert(removeIds,id)
+        if confirmed then
+            local pos = currentTarget.position
+            if pos and not alreadyCollected(pos) then table.insert(collectedPositions, pos) end
+            local removeIds = {}
+            for id, entry in pairs(entries) do
+                if id == currentTarget.id or (pos and
+                    (entry.position-pos).Magnitude <= C.MergeRadius) then
+                    table.insert(removeIds, id)
+                end
             end
-        end
-        for _,id in ipairs(removeIds) do
-            removeEntry(id)
+            for _, id in ipairs(removeIds) do removeEntry(id) end
+        else
+            -- A loss, cancellation or unknown result remains available for retry.
+            currentTarget.nextAttempt = now + C.TargetRetryDelay
         end
     end
-
+    evidence = nil
     currentTarget = nil
-    collectPhase = "cooldown"
+    collectPhase = "idle"
     clawClosedSince = nil
-    nextCandyAt = now + C.NextCandyDelay
-    collectStatus = "Claw finished | Marker cleared | Waiting 2 seconds"
+    nextCandyAt = 0
+    collectStatus = confirmed and "Collection confirmed | Ready for next candy"
+        or "Collection unconfirmed | Candy kept for retry"
 end
 
 local function collectionStep()
@@ -930,6 +1008,7 @@ local function collectionStep()
     end
 
     local now = os.clock()
+    observeEvidence()
     local clawOpen = isClawUIOpen()
 
     -- While the claw or payout screen is active, never teleport.
@@ -952,7 +1031,11 @@ local function collectionStep()
             return
         end
 
-        finishClaw()
+        -- Keep the target/evidence through the payout delay in case a late
+        -- result appears. Nothing is permanently marked collected here.
+        collectPhase = "cooldown"
+        nextCandyAt = now + C.NextCandyDelay
+        collectStatus = "Claw closed | Waiting 2 seconds"
         return
     end
 
@@ -974,13 +1057,12 @@ local function collectionStep()
             return
         end
 
-        collectPhase = "idle"
-        nextCandyAt = 0
-        collectStatus = "Ready for next candy"
+        finishClaw()
+        return
     end
 
     if collectPhase == "triggered" then
-        if clawOpen then
+        if clawOpen or (evidence and evidence.success) then
             collectPhase = "playing"
             clawClosedSince = nil
             collectStatus = "Playing claw minigame"
@@ -994,6 +1076,8 @@ local function collectionStep()
 
     -- An already-open claw must finish before starting any new candy.
     if clawOpen then
+        collectPhase = "playing"
+        clawClosedSince = nil
         collectStatus = "Waiting for existing claw to close"
         return
     end
@@ -1051,9 +1135,14 @@ local function collectionStep()
                 root.AssemblyLinearVelocity = Vector3.zero
             end
 
+            beginEvidence(currentTarget)
+            local generation = collectionGeneration
+            local target = currentTarget
             local ok,err = pcall(function()
                 fireproximityprompt(prompt)
             end)
+            if not alive or not C.AutoCollect or generation ~= collectionGeneration
+                or target ~= currentTarget then return end
 
             if ok then
                 collectPhase = "triggered"
@@ -1080,11 +1169,11 @@ local guiParent = PG
 
 if type(gethui) == "function" then
     local ok,result = pcall(gethui)
-    if ok and result then guiParent = result end
+    if ok and typeof(result) == "Instance" then guiParent = result end
 end
 
 local gui = make("ScreenGui",guiParent,{
-    Name="SmithsHubV153",
+    Name="SmithsHubV154",
     ResetOnSpawn=false,
     IgnoreGuiInset=true,
     DisplayOrder=9000,
@@ -1138,7 +1227,7 @@ local headerFallback = make("TextLabel",header,{
 corner(headerFallback,7)
 
 make("TextLabel",header,{
-    Text="SMITH'S HUB  |  V15.3",
+    Text="SMITH'S HUB  |  V15.4",
     Position=UDim2.fromOffset(56,2),
     Size=UDim2.fromOffset(300,44),
     BackgroundTransparency=1,
@@ -1305,59 +1394,47 @@ local progressFill = make("Frame",progressTrack,{
 })
 corner(progressFill,4)
 
--- Download GitHub logo once and share it across GUI.
+-- Keep the registered PNG available for later minimising and reopening.
 local function loadLogo()
-    local assetLoader = getcustomasset or getsynasset
-
-    if type(writefile) ~= "function"
-        or type(delfile) ~= "function"
-        or type(assetLoader) ~= "function" then
-        warn("[Smith's Hub] Custom logo APIs unavailable")
-        return
-    end
-
     task.spawn(function()
-        local ok,asset = pcall(function()
+        local ok, err = pcall(function()
+            local assetLoader = type(getcustomasset) == "function"
+                and getcustomasset or getsynasset
+            if type(writefile) ~= "function" or type(assetLoader) ~= "function" then
+                error("Executor lacks writefile/getcustomasset support.")
+            end
             local bytes = game:HttpGet(LOGO_URL)
-            assert(type(bytes)=="string" and #bytes>100)
-
-            writefile(TEMP_LOGO,bytes)
-            return assetLoader(TEMP_LOGO)
-        end)
-
-        if ok and type(asset)=="string" and alive then
-            headerLogo.Image=asset
-            miniLogo.Image=asset
-            splashLogo.Image=asset
-
-            -- Try to load asset before removing temporary file.
-            pcall(function()
-                CP:PreloadAsync({
-                    headerLogo,
-                    miniLogo,
-                    splashLogo
-                })
+            if not alive then return end
+            if type(bytes) ~= "string" or bytes:sub(1,8) ~= "\137PNG\r\n\26\n" then
+                error("assets/logo.png did not return a valid PNG.")
+            end
+            writefile(LOGO_FILE, bytes)
+            local asset = assetLoader(LOGO_FILE)
+            if type(asset) ~= "string" or asset == "" then error("Invalid logo asset.") end
+            if not alive then return end
+            headerLogo.Image = asset
+            miniLogo.Image = asset
+            if splashLogo.Parent then splashLogo.Image = asset end
+            local fetched = false
+            CP:PreloadAsync({asset}, function(_, result)
+                if result == Enum.AssetFetchStatus.Success then fetched = true end
             end)
-
-            if alive then
-                headerFallback.Visible=false
-                splashFallback.Visible=false
-                mini.Text=""
+            if not alive then return end
+            if not fetched and not headerLogo.IsLoaded and not miniLogo.IsLoaded then
+                error("The logo could not be displayed.")
             end
-        else
-            warn("[Smith's Hub] Logo unavailable:",
-                tostring(asset))
-        end
-
-        pcall(function()
-            if type(isfile)~="function"
-                or isfile(TEMP_LOGO) then
-                delfile(TEMP_LOGO)
-            end
+            headerFallback.Visible = false
+            if splashFallback.Parent then splashFallback.Visible = false end
+            mini.Text = ""
         end)
+        if not ok and alive then
+            headerFallback.Visible = true
+            if splashFallback.Parent then splashFallback.Visible = true end
+            mini.Text = "S"
+            warn("[Smith's Hub] Logo unavailable:", err)
+        end
     end)
 end
-
 loadLogo()
 
 -- Stage 1: logo stays centered for 0.5s
@@ -1904,18 +1981,14 @@ connect(RS.Heartbeat,function(dt)
         local car,seat,module=findVehicle()
 
         if not car then
-            restoreVehicle()
+            if session or vehicleLoad then restoreVehicle() end
         else
-            if session and (
-                session.car~=car
-                or session.seat~=seat
-            ) then
+            if (session and (session.car~=car or session.seat~=seat or session.module~=module))
+                or (vehicleLoad and (vehicleLoad.car~=car or vehicleLoad.seat~=seat
+                    or vehicleLoad.module~=module)) then
                 restoreVehicle()
             end
-
-            if not session then
-                loadVehicle(car,seat,module)
-            end
+            if not session and not vehicleLoad then loadVehicle(car,seat,module) end
 
             if session then
                 if session.values.Parent then
@@ -1978,7 +2051,11 @@ connect(RS.Heartbeat,function(dt)
     if collectionTimer < 0.25 then return end
     collectionTimer = 0
 
+    if collectionBusy then return end
+    collectionBusy = true
     local ok,err = pcall(collectionStep)
+    collectionBusy = false
+    if not alive then return end
     if not ok then
         collectStatus = "Auto Collect ERROR"
         warn("[Smith's Hub] Collection:",err)
@@ -1988,6 +2065,7 @@ end)
 connect(RS.RenderStepped,function()
     if not alive then return end
 
+    if C.AutoCollect then pcall(observeEvidence) end
     if C.AutoClaw or C.AutoCollect then
         local ok,err=pcall(clawStep)
 
@@ -2001,7 +2079,7 @@ end)
 -- CLEANUP
 -- =========================================
 
-local function unload()
+local function unload(fromGui)
     if not alive then return end
     alive=false
 
@@ -2015,17 +2093,24 @@ local function unload()
     end
 
     clearMarkers()
-    gui:Destroy()
+    if not fromGui then gui:Destroy() end
 
-    if ENV.SmithHubV153Unload==unload then
-        ENV.SmithHubV153Unload=nil
+    if ENV.SmithHubV154Unload==unload then
+        ENV.SmithHubV154Unload=nil
     end
 
-    print("[SMITH'S HUB V15.3] Unloaded")
+    print("[SMITH'S HUB V15.4] Unloaded")
 end
 
-ENV.SmithHubV153Unload=unload
+ENV.SmithHubV154Unload=unload
 
-connect(close.MouseButton1Click,unload)
+connect(close.MouseButton1Click,function() unload() end)
+connect(gui.Destroying,function() unload(true) end)
+connect(Player.CharacterRemoving,function()
+    if currentTarget then currentTarget.nextAttempt=os.clock()+C.TargetRetryDelay end
+    stopCollection()
+    resetClaw()
+    restoreVehicle()
+end)
 
-print("[SMITH'S HUB V15.3] Loaded")
+print("[SMITH'S HUB V15.4] Loaded")
