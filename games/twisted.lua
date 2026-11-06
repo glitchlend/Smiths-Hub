@@ -1,4 +1,4 @@
--- SMITH'S TWISTED V3.4
+-- SMITH'S TWISTED V3.6
 -- Actual logo + X to unload + independent minimised icon.
 -- Measurements marked ~ use unverified game-scale assumptions.
 
@@ -110,7 +110,7 @@ local function label(parentObj, message, position, size, fontSize)
 end
 
 local title = label(
-    menu, "SMITH'S TWISTED V3.4",
+    menu, "SMITH'S TWISTED V3.6",
     UDim2.fromOffset(8, 0),
     UDim2.new(1, -80, 0, 35),
     13
@@ -374,7 +374,7 @@ function api.Destroy()
 end
 
 env[KEY] = api
-local finderButton = button("Find HIGH / HIGH / HIGH", 242, function(_, input)
+local finderButton = button("Find best server", 242, function(_, input)
     if api.ToggleFinder then api.ToggleFinder(input) end
 end)
 finderButton.Name = "ServerFinder"
@@ -940,7 +940,7 @@ listen(Run.Heartbeat, function(dt)
         status.Text = "Update error — see console"
         if tostring(err) ~= lastError then
             lastError = tostring(err)
-            warn("[SmithTwisted V3.4] " .. lastError)
+            warn("[SmithTwisted V3.6] " .. lastError)
         end
     else
         lastError = nil
@@ -951,47 +951,23 @@ listen(Run.Heartbeat, function(dt)
     end
 end)
 
--- SERVER FINDER: ranks the lobby's available servers.
+-- SERVER FINDER: reads the lobby's actual browser rows; no guessed remote payloads.
 do
     local Teleport = game:GetService("TeleportService")
-    local finder = {
-        Active = false,
-        Epoch = 0,
-        NextScan = 0,
-        Cooldowns = {},
-    }
-
-    local SCAN_SECONDS = 2
-    local RETRY_SECONDS = 45
-    local JOIN_TIMEOUT = 25
-
-    local RISK = {
-        TSTM = 0,
-        MRGL = 1,
-        SLGT = 2,
-        ENH = 3,
-        MDT = 4,
-        HIGH = 5,
-    }
-
-    -- Day 1: 50%, Day 2: 30%, Day 3: 20%.
+    local finder = {Active = false, Epoch = 0, NextScan = 0, Cooldowns = {}}
+    local SCAN_SECONDS, RETRY_SECONDS, JOIN_TIMEOUT = 2, 45, 25
+    local RISK = {TSTM = 0, MRGL = 1, SLGT = 2, ENH = 3, MDT = 4, HIGH = 5}
     local WEIGHTS = {5, 3, 2}
-
-    -- Weather contributes up to 50 points.
-    -- Newer servers receive up to 1.5 additional points.
-    -- This does not estimate the actual in-game clock.
-    local MAX_AGE_BONUS = 1.5
-    local AGE_HALF_LIFE = 3600
-
+    -- A ranking preference, not a prediction of tornado strength or game time.
+    -- Weather contributes up to 50 points; youth adds at most 1.5 points.
+    local MAX_AGE_BONUS, AGE_HALF_LIFE = 1.5, 3600
     finderButton.Text = "Find best server"
-    title.Text = "SMITH'S TWISTED V3.5"
+    title.Text = "SMITH'S TWISTED V3.6"
 
     local function message(text, seconds)
         finderMessage = text
         finderMessageUntil = seconds and os.clock() + seconds or nil
-        if alive then
-            status.Text = text
-        end
+        if alive then status.Text = text end
     end
 
     local function plain(text)
@@ -999,10 +975,7 @@ do
     end
 
     local function textOf(obj)
-        if obj and (
-            obj:IsA("TextLabel")
-            or obj:IsA("TextButton")
-        ) then
+        if obj and (obj:IsA("TextLabel") or obj:IsA("TextButton")) then
             return plain(obj.Text)
         end
         return ""
@@ -1014,155 +987,81 @@ do
         local frame = interface and interface:FindFirstChild("MainFrame")
         local play = frame and frame:FindFirstChild("Play")
         local servers = play and play:FindFirstChild("Servers")
-
-        if not servers then
-            return nil
-        end
-
+        if not servers then return nil end
         local obj = servers
         while obj and obj ~= pg do
-            if obj:IsA("GuiObject") and not obj.Visible then
-                return nil
-            end
-            if obj:IsA("ScreenGui") and not obj.Enabled then
-                return nil
-            end
+            if obj:IsA("GuiObject") and not obj.Visible then return nil end
+            if obj:IsA("ScreenGui") and not obj.Enabled then return nil end
             obj = obj.Parent
         end
-
         return servers
     end
 
+    -- Uptime is DD:HH:MM:SS, not the in-game clock or forecast-day number.
     local function uptime(text)
-        local d, h, m, s = text:match(
-            "^%s*(%d+):(%d+):(%d+):(%d+)%s*$"
-        )
-
-        if not d then
-            return math.huge
-        end
-
+        local d, h, m, s = text:match("^%s*(%d+):(%d+):(%d+):(%d+)%s*$")
+        if not d then return math.huge end
         d, h, m, s = tonumber(d), tonumber(h), tonumber(m), tonumber(s)
-
-        if h >= 24 or m >= 60 or s >= 60 then
-            return math.huge
-        end
-
+        if h >= 24 or m >= 60 or s >= 60 then return math.huge end
         return d * 86400 + h * 3600 + m * 60 + s
     end
 
     local function readRow(row, servers)
-        if row.Parent ~= servers
-            or not row:IsA("GuiObject")
-            or not row.Visible then
+        if row.Parent ~= servers or not row:IsA("GuiObject") or not row.Visible then
             return nil
         end
-
         local risks = row:FindFirstChild("Risks")
         local play = row:FindFirstChild("Play")
-
-        if not risks or not play
-            or not play:IsA("GuiButton")
-            or not play.Visible then
+        if not risks or not play or not play:IsA("GuiButton") or not play.Visible then
             return nil
         end
-
-        local ratings = {}
-        local forecastScore = 0
-
+        local ratings, forecastScore = {}, 0
         for day = 1, 3 do
-            local risk = textOf(
-                risks:FindFirstChild("day" .. day)
-            ):upper()
-
+            local risk = textOf(risks:FindFirstChild("day" .. day)):upper()
             risk = risk:gsub("DAY%s*%d+", ""):gsub("%s", "")
-
-            if RISK[risk] == nil then
-                return nil
-            end
-
+            if RISK[risk] == nil then return nil end
             ratings[day] = risk
             forecastScore += RISK[risk] * WEIGHTS[day]
         end
-
-        local current, maximum = textOf(
-            row:FindFirstChild("PlayerCount")
-        ):match("^%s*(%d+)%s*/%s*(%d+)%s*$")
-
+        local current, maximum = textOf(row:FindFirstChild("PlayerCount"))
+            :match("^%s*(%d+)%s*/%s*(%d+)%s*$")
         current, maximum = tonumber(current), tonumber(maximum)
-
-        if not current or not maximum
-            or maximum <= 0
-            or current >= maximum then
+        if not current or not maximum or maximum <= 0 or current >= maximum then
             return nil
         end
-
         local age = row:FindFirstChild("Uptime")
         local ageText = textOf(age and age:FindFirstChild("label"))
         local seconds = uptime(ageText)
-        local ageBonus = MAX_AGE_BONUS / (
-            1 + seconds / AGE_HALF_LIFE
-        )
-
+        local ageBonus = MAX_AGE_BONUS / (1 + seconds / AGE_HALF_LIFE)
         return {
-            Row = row,
-            Button = play,
-            Id = row.Name,
-            Players = current,
-            MaxPlayers = maximum,
-            Age = seconds,
-            AgeText = ageText,
-            Ratings = ratings,
-            ForecastScore = forecastScore,
-            Score = forecastScore + ageBonus,
+            Row = row, Button = play, Id = row.Name,
+            Players = current, MaxPlayers = maximum,
+            Age = seconds, AgeText = ageText, Ratings = ratings,
+            ForecastScore = forecastScore, Score = forecastScore + ageBonus,
         }
     end
 
     local function bestServer(servers, now)
-        local matches = {}
-        local total = 0
-
+        local matches, total = {}, 0
         for _, row in ipairs(servers:GetChildren()) do
-            if row:FindFirstChild("Risks") then
-                total += 1
-            end
-
+            if row:FindFirstChild("Risks") then total += 1 end
             local candidate = readRow(row, servers)
-            local cooldown = candidate
-                and finder.Cooldowns[candidate.Id]
-
+            local cooldown = candidate and finder.Cooldowns[candidate.Id]
             if candidate and (not cooldown or now >= cooldown) then
                 table.insert(matches, candidate)
             end
         end
-
         table.sort(matches, function(a, b)
-            if a.Score ~= b.Score then
-                return a.Score > b.Score
-            end
-
-            if a.ForecastScore ~= b.ForecastScore then
-                return a.ForecastScore > b.ForecastScore
-            end
-
+            if a.Score ~= b.Score then return a.Score > b.Score end
+            if a.ForecastScore ~= b.ForecastScore then return a.ForecastScore > b.ForecastScore end
             if RISK[a.Ratings[1]] ~= RISK[b.Ratings[1]] then
                 return RISK[a.Ratings[1]] > RISK[b.Ratings[1]]
             end
-
-            if a.Age ~= b.Age then
-                return a.Age < b.Age
-            end
-
-            local freeA = a.MaxPlayers - a.Players
-            local freeB = b.MaxPlayers - b.Players
-
-            if freeA ~= freeB then
-                return freeA > freeB
-            end
-
+            if a.Age ~= b.Age then return a.Age < b.Age end
+            local freeA, freeB = a.MaxPlayers - a.Players, b.MaxPlayers - b.Players
+            if freeA ~= freeB then return freeA > freeB end
             return a.Id < b.Id
         end)
-
         return matches[1], total, #matches
     end
 
@@ -1171,12 +1070,12 @@ do
     end
 
     local function cancelWorker()
+        local release = finder.ReleaseMouse
+        finder.ReleaseMouse = nil
+        if release then pcall(release) end
         local worker = finder.Worker
         finder.Worker = nil
-
-        if worker
-            and worker ~= coroutine.running()
-            and coroutine.status(worker) ~= "dead" then
+        if worker and worker ~= coroutine.running() and coroutine.status(worker) ~= "dead" then
             pcall(task.cancel, worker)
         end
     end
@@ -1186,7 +1085,6 @@ do
         finder.Epoch += 1
         finder.Pending = nil
         cancelWorker()
-
         if alive then
             finderButton.Text = "Find best server"
             finderButton.BackgroundColor3 = Color3.fromRGB(36, 43, 55)
@@ -1195,164 +1093,202 @@ do
     end
 
     function api.ToggleFinder(input)
-        if finder.Active then
-            api.StopFinder()
-            return
-        end
-
-        if not alive then
-            return
-        end
-
-        if type(getconnections) ~= "function" then
-            message("Auto-join needs getconnections support", 12)
-            return
-        end
-
+        if finder.Active then api.StopFinder() return end
+        if not alive then return end
         finder.Epoch += 1
-        finder.Active = true
-        finder.NextScan = 0
+        finder.Active, finder.NextScan = true, 0
         finder.Input = input
         finder.Cooldowns = {}
-
         finderButton.Text = "Stop searching / retries"
         finderButton.BackgroundColor3 = Color3.fromRGB(25, 80, 90)
-
-        message(
-            "Finding the best available forecast\n"
-            .. "Prefers stronger weather and newer servers"
-        )
+        message("Finding the best available forecast\nPrefers stronger weather and newer servers")
     end
 
     local function failed(pending, reason)
-        if not finder.Active or finder.Pending ~= pending then
-            return
-        end
-
+        if not finder.Active or finder.Pending ~= pending then return end
         finder.Cooldowns[pending.Id] = os.clock() + RETRY_SECONDS
         finder.Pending = nil
         finder.NextScan = os.clock() + SCAN_SECONDS
         cancelWorker()
-
-        message(
-            "Join failed; searching again\n"
-            .. tostring(reason):sub(1, 80)
-        )
+        message("Join failed; searching again\n" .. tostring(reason):sub(1, 80))
     end
 
-    -- Use one button event to avoid requesting duplicate joins.
+    -- Use one event only; firing Click AND Activated could request two joins.
     local function callbacks(play)
-        for index, signal in ipairs({
-            play.MouseButton1Click,
-            play.Activated,
-        }) do
+        for index, signal in ipairs(type(getconnections) == "function"
+            and {play.MouseButton1Click, play.Activated} or {}) do
             local ok, listeners = pcall(getconnections, signal)
-
             if ok and type(listeners) == "table" then
                 local result = {}
-
                 for _, listener in ipairs(listeners) do
                     local readable, callback = pcall(function()
-                        if listener.Enabled ~= false then
-                            return listener.Function
-                        end
+                        if listener.Enabled ~= false then return listener.Function end
                     end)
-
                     if readable and type(callback) == "function" then
                         table.insert(result, callback)
                     end
                 end
-
-                if #result > 0 then
-                    return result, index == 2
-                end
+                if #result > 0 then return result, index == 2 end
             end
         end
+        -- Some executors cannot expose the game's handlers. Use real GUI input.
+        return {function()
+            local pending, epoch = finder.Pending, finder.Epoch
+            local function current()
+                return alive and finder.Active and finder.Pending == pending
+                    and finder.Epoch == epoch
+            end
+            if not current() then return end
 
-        return nil
-    end
+            -- Scroll using rendered coordinates, without assuming a row height.
+            local ancestor = play.Parent
+            while ancestor and not ancestor:IsA("ScreenGui") do
+                if ancestor:IsA("ScrollingFrame") then
+                    local centerY = play.AbsolutePosition.Y + play.AbsoluteSize.Y / 2
+                    local height = ancestor.AbsoluteWindowSize.Y
+                    local offset = centerY - ancestor.AbsolutePosition.Y - height / 2
+                    local maximum = math.max(0, ancestor.AbsoluteCanvasSize.Y - height)
+                    ancestor.CanvasPosition = Vector2.new(
+                        ancestor.CanvasPosition.X,
+                        math.clamp(ancestor.CanvasPosition.Y + offset, 0, maximum)
+                    )
+                    Run.RenderStepped:Wait()
+                    if not current() then return end
+                end
+                ancestor = ancestor.Parent
+            end
 
-    local function join(candidate)
-        local pending = {
-            Id = candidate.Id,
-            Time = os.clock(),
-            Started = false,
-        }
-
-        local epoch = finder.Epoch
-        finder.Pending = pending
-
-        message("Checking " .. candidate.Id .. "\n" .. outlook(candidate))
-
-        finder.Worker = task.defer(function()
-            if not alive
-                or not finder.Active
-                or finder.Epoch ~= epoch then
+            local servers = browser()
+            local fresh = servers and bestServer(servers, os.clock())
+            if not fresh or fresh.Button ~= play or fresh.Id ~= pending.Id then
+                if current() then
+                    finder.Pending, finder.Worker = nil, nil
+                    finder.NextScan = os.clock() + SCAN_SECONDS
+                    message("Server list changed; ranking again")
+                end
                 return
             end
 
-            local handlers, activated = callbacks(candidate.Button)
+            local GuiService = game:GetService("GuiService")
+            local inset = GuiService:GetGuiInset()
+            local function screenRect(obj)
+                local root = obj:FindFirstAncestorWhichIsA("ScreenGui")
+                local shift = root and not root.IgnoreGuiInset and inset or Vector2.zero
+                return obj.AbsolutePosition + shift, obj.AbsoluteSize
+            end
+            local position, size = screenRect(play)
+            local point = position + size / 2
+            if size.X <= 0 or size.Y <= 0 then
+                error("Selected Play button has no rendered size", 0)
+            end
 
-            -- Recheck every server before joining in case the list changed.
+            -- Check clipping after the scroll has settled.
+            ancestor = play.Parent
+            while ancestor and not ancestor:IsA("ScreenGui") do
+                if ancestor:IsA("GuiObject") and ancestor.ClipsDescendants then
+                    local p, s = screenRect(ancestor)
+                    if point.X <= p.X or point.Y <= p.Y
+                        or point.X >= p.X + s.X or point.Y >= p.Y + s.Y then
+                        error("Selected Play button is still clipped", 0)
+                    end
+                end
+                ancestor = ancestor.Parent
+            end
+
+            local function covers(obj)
+                if not obj.Visible or not gui.Enabled then return false end
+                local p, s = screenRect(obj)
+                return point.X >= p.X and point.X <= p.X + s.X
+                    and point.Y >= p.Y and point.Y <= p.Y + s.Y
+            end
+            if covers(menu) or covers(icon) then
+                api.StopFinder()
+                message("Move Smith's Hub away from " .. pending.Id .. "'s Play button", 12)
+                return
+            end
+
+            local pg = player:FindFirstChildOfClass("PlayerGui")
+            local hits = pg:GetGuiObjectsAtPosition(point.X - inset.X, point.Y - inset.Y)
+            local found = false
+            for _, hit in ipairs(hits) do
+                if hit == play or hit:IsDescendantOf(play) then
+                    found = true
+                    break
+                end
+                if hit:IsA("GuiButton") then break end
+            end
+            if not found then
+                api.StopFinder()
+                message("Selected Play button is covered\nClear the overlay, then press Find", 12)
+                return
+            end
+            if not current() then return end
+
+            local ok, err = pcall(function()
+                local mouse = game:GetService("VirtualInputManager")
+                local function release()
+                    mouse:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
+                end
+                finder.ReleaseMouse = release
+                mouse:SendMouseMoveEvent(point.X, point.Y, game)
+                if not current() then return end
+                mouse:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
+                if finder.ReleaseMouse == release then
+                    release()
+                    finder.ReleaseMouse = nil
+                end
+            end)
+            if not ok then
+                api.StopFinder()
+                message("Auto-click unavailable; see console\nBest server: " .. pending.Id, 15)
+                warn("[SmithTwisted Finder] Auto-click: " .. tostring(err))
+            end
+        end}, false
+    end
+
+    local function join(candidate)
+        local pending = {Id = candidate.Id, Time = os.clock(), Started = false}
+        local epoch = finder.Epoch
+        finder.Pending = pending
+        message("Checking " .. candidate.Id .. "\n" .. outlook(candidate))
+        finder.Worker = task.defer(function()
+            if not alive or not finder.Active or finder.Epoch ~= epoch then return end
+            local handlers, activated = callbacks(candidate.Button)
+            -- Rank the whole browser again: another row may now be better.
             local servers = browser()
             local fresh = servers and bestServer(servers, os.clock())
-
-            if not fresh
-                or fresh.Row ~= candidate.Row
-                or fresh.Button ~= candidate.Button
+            if not fresh or fresh.Row ~= candidate.Row or fresh.Button ~= candidate.Button
                 or fresh.Id ~= pending.Id then
-
                 if finder.Active and finder.Pending == pending then
                     finder.Pending = nil
                     finder.Worker = nil
                     finder.NextScan = os.clock() + SCAN_SECONDS
                     message("Server list changed; ranking again")
                 end
-
                 return
             end
-
             if not handlers then
                 failed(pending, "No readable Play-button handler")
                 return
             end
-
             pending.Outlook = outlook(fresh)
-
-            message(
-                "Joining " .. fresh.Id
-                .. " | " .. fresh.Players
-                .. "/" .. fresh.MaxPlayers
-                .. " players\n" .. pending.Outlook
-            )
-
+            message("Joining " .. fresh.Id .. " | " .. fresh.Players .. "/"
+                .. fresh.MaxPlayers .. " players\n" .. pending.Outlook)
             for _, callback in ipairs(handlers) do
-                if not alive
-                    or not finder.Active
-                    or finder.Epoch ~= epoch
-                    or finder.Pending ~= pending then
-                    return
-                end
-
+                if not alive or not finder.Active or finder.Epoch ~= epoch
+                    or finder.Pending ~= pending then return end
                 local ok, err
-
                 if activated then
                     ok, err = pcall(callback, finder.Input, 1)
                 else
                     ok, err = pcall(callback)
                 end
-
                 if not ok then
-                    if not pending.Started then
-                        failed(pending, err)
-                    end
+                    if not pending.Started then failed(pending, err) end
                     return
                 end
             end
-
-            if finder.Epoch == epoch then
-                finder.Worker = nil
-            end
+            if finder.Epoch == epoch then finder.Worker = nil end
         end)
     end
 
@@ -1361,87 +1297,49 @@ do
             failed(finder.Pending, result)
         end
     end)
-
     listen(player.OnTeleport, function(state)
         local pending = finder.Pending
-
-        if not finder.Active or not pending then
-            return
-        end
-
+        if not finder.Active or not pending then return end
         if state == Enum.TeleportState.Failed then
             failed(pending, "Teleport failed")
         else
             pending.Started = true
-
-            message(
-                "Teleporting to " .. pending.Id
-                .. "\n" .. (pending.Outlook or "")
-            )
+            message("Teleporting to " .. pending.Id .. "\n" .. (pending.Outlook or ""))
         end
     end)
 
     local function step()
-        if not alive or not finder.Active then
-            return
-        end
-
+        if not alive or not finder.Active then return end
         local now = os.clock()
-
         if finder.Pending then
-            if not finder.Pending.Started
-                and now - finder.Pending.Time >= JOIN_TIMEOUT then
-
+            -- Once teleporting starts, only an explicit failure permits another join.
+            if not finder.Pending.Started and now - finder.Pending.Time >= JOIN_TIMEOUT then
                 api.StopFinder()
-
-                message(
-                    "No join response; search stopped\n"
-                    .. "Press Find to try again",
-                    12
-                )
+                message("No join response; search stopped\nPress Find to try again", 12)
             end
             return
         end
-
-        if now < finder.NextScan then
-            return
-        end
-
+        if now < finder.NextScan then return end
         finder.NextScan = now + SCAN_SECONDS
-
         local servers = browser()
-
         if not servers then
-            message(
-                "Open Twisted's main-menu server list\n"
-                .. "Finder is waiting"
-            )
+            message("Open Twisted's main-menu server list\nFinder is waiting")
             return
         end
-
         for id, untilTime in pairs(finder.Cooldowns) do
-            if now >= untilTime then
-                finder.Cooldowns[id] = nil
-            end
+            if now >= untilTime then finder.Cooldowns[id] = nil end
         end
-
         local best, total = bestServer(servers, now)
-
         if best then
             join(best)
         else
-            message(
-                "No joinable forecast in " .. total
-                .. " listed servers\n"
-                .. "Rechecking the browser every "
-                .. SCAN_SECONDS .. "s"
-            )
+            message("No joinable forecast in " .. total .. " listed servers\n"
+                .. "Rechecking the browser every " .. SCAN_SECONDS .. "s")
         end
     end
 
     listen(Run.Heartbeat, function()
         local ok, err = pcall(step)
-
         if not ok then
             api.StopFinder()
             message("Server finder error; see console", 12)
@@ -1450,7 +1348,4 @@ do
     end)
 end
 
-print(
-    "[SmithTwisted] V3.5 loaded. "
-    .. "Features start OFF; best-server finder is ready."
-)
+print("[SmithTwisted] V3.6 loaded. Features start OFF; best-server finder is ready.")
