@@ -1,4 +1,4 @@
--- SMITH'S TWISTED V3.2
+-- SMITH'S TWISTED V3.3
 -- Actual logo + X to unload + independent minimised icon.
 -- Measurements marked ~ use unverified game-scale assumptions.
 
@@ -110,7 +110,7 @@ local function label(parentObj, message, position, size, fontSize)
 end
 
 local title = label(
-    menu, "SMITH'S TWISTED V3.2",
+    menu, "SMITH'S TWISTED V3.3",
     UDim2.fromOffset(8, 0),
     UDim2.new(1, -80, 0, 35),
     13
@@ -380,7 +380,8 @@ listen(gui.Destroying, api.Destroy)
 -- Keep the local image file so reopening the icon can still load it.
 task.spawn(function()
     local ok, err = pcall(function()
-        local assetLoader = getcustomasset or getsynasset
+        local assetLoader = type(getcustomasset) == "function"
+            and getcustomasset or getsynasset
 
         if type(writefile) ~= "function"
             or type(assetLoader) ~= "function" then
@@ -404,16 +405,14 @@ task.spawn(function()
         if not alive then return end
 
         iconLogo.Image = asset
-        local failed = false
-
-        ContentProvider:PreloadAsync({iconLogo}, function(_, status)
-            if status ~= Enum.AssetFetchStatus.Success then
-                failed = true
-            end
+        local fetched = false
+        ContentProvider:PreloadAsync({asset}, function(_, result)
+            if result == Enum.AssetFetchStatus.Success then fetched = true end
         end)
 
         if not alive then return end
-        if failed or not iconLogo.IsLoaded then
+        -- Hidden textures may not be resident even after a successful fetch.
+        if not fetched and not iconLogo.IsLoaded then
             error("The logo downloaded but could not be displayed.")
         end
 
@@ -479,6 +478,7 @@ local function read(parentObj, name)
     if obj and obj:IsA("ValueBase") then
         return obj.Value
     end
+    return nil
 end
 
 local function number(n)
@@ -935,11 +935,11 @@ listen(Run.Heartbeat, function(dt)
         status.Text = "Update error — see console"
         if tostring(err) ~= lastError then
             lastError = tostring(err)
-            warn("[SmithTwisted V3.2] " .. lastError)
+            warn("[SmithTwisted V3.3] " .. lastError)
         end
     else
         lastError = nil
     end
 end)
 
-print("[SmithTwisted] V3.2 loaded. All feature toggles start OFF.")
+print("[SmithTwisted] V3.3 loaded. All feature toggles start OFF.")
