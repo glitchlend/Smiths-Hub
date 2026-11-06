@@ -1860,9 +1860,15 @@ local streamingNotice=make("TextLabel",farmPage,{
 corner(streamingNotice,7)
 
 connect(minimize.MouseButton1Click,function()
-    mini.Position=window.Position
     window.Visible=false
     mini.Visible=true
+end)
+
+connect(mini.MouseButton1Click,function()
+    if not miniMoved() then
+        mini.Visible=false
+        window.Visible=true
+    end
 end)
 
 connect(mini.MouseButton1Click,function()
