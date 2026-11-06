@@ -1,4 +1,4 @@
--- SMITH'S TWISTED V3.3
+-- SMITH'S TWISTED V3.4
 -- Actual logo + X to unload + independent minimised icon.
 -- Measurements marked ~ use unverified game-scale assumptions.
 
@@ -110,7 +110,7 @@ local function label(parentObj, message, position, size, fontSize)
 end
 
 local title = label(
-    menu, "SMITH'S TWISTED V3.3",
+    menu, "SMITH'S TWISTED V3.4",
     UDim2.fromOffset(8, 0),
     UDim2.new(1, -80, 0, 35),
     13
@@ -237,8 +237,8 @@ local function button(text, y, callback)
     }, menu)
 
     round(b)
-    listen(b.Activated, function()
-        callback(b)
+    listen(b.Activated, function(input, clicks)
+        callback(b, input, clicks)
     end)
     return b
 end
@@ -344,10 +344,12 @@ button("Units: METRIC", 208, function(b)
 end)
 
 local api = {}
+local finderMessage, finderMessageUntil
 
 function api.Destroy()
     if not alive then return end
     alive = false
+    if api.StopFinder then api.StopFinder() end
     Run:UnbindFromRenderStep(BIND)
 
     for _, c in ipairs(connections) do
@@ -372,7 +374,10 @@ function api.Destroy()
 end
 
 env[KEY] = api
-button("Unload", 242, api.Destroy)
+local finderButton = button("Find HIGH / HIGH / HIGH", 242, function(_, input)
+    if api.ToggleFinder then api.ToggleFinder(input) end
+end)
+finderButton.Name = "ServerFinder"
 listen(close.Activated, api.Destroy)
 listen(gui.Destroying, api.Destroy)
 
@@ -935,11 +940,264 @@ listen(Run.Heartbeat, function(dt)
         status.Text = "Update error — see console"
         if tostring(err) ~= lastError then
             lastError = tostring(err)
-            warn("[SmithTwisted V3.3] " .. lastError)
+            warn("[SmithTwisted V3.4] " .. lastError)
         end
     else
         lastError = nil
     end
+
+    if finderMessage and (not finderMessageUntil or os.clock() < finderMessageUntil) then
+        status.Text = finderMessage
+    end
 end)
 
-print("[SmithTwisted] V3.3 loaded. All feature toggles start OFF.")
+-- SERVER FINDER: reads the lobby's actual browser rows; no guessed remote payloads.
+do
+    local Teleport = game:GetService("TeleportService")
+    local finder = {Active = false, Epoch = 0, NextScan = 0, Cooldowns = {}}
+    local SCAN_SECONDS, RETRY_SECONDS, JOIN_TIMEOUT = 2, 45, 25
+
+    local function message(text, seconds)
+        finderMessage = text
+        finderMessageUntil = seconds and os.clock() + seconds or nil
+        if alive then status.Text = text end
+    end
+
+    local function plain(text)
+        return (text:gsub("<[^>]*>", " "):gsub("&nbsp;", " "))
+    end
+
+    local function textOf(obj)
+        if obj and (obj:IsA("TextLabel") or obj:IsA("TextButton")) then
+            return plain(obj.Text)
+        end
+        return ""
+    end
+
+    local function browser()
+        local pg = player:FindFirstChildOfClass("PlayerGui")
+        local interface = pg and pg:FindFirstChild("MainInterface")
+        local frame = interface and interface:FindFirstChild("MainFrame")
+        local play = frame and frame:FindFirstChild("Play")
+        local servers = play and play:FindFirstChild("Servers")
+        if not servers then return nil end
+        local obj = servers
+        while obj and obj ~= pg do
+            if obj:IsA("GuiObject") and not obj.Visible then return nil end
+            if obj:IsA("ScreenGui") and not obj.Enabled then return nil end
+            obj = obj.Parent
+        end
+        return servers
+    end
+
+    -- Uptime is DD:HH:MM:SS, not the in-game clock or forecast-day number.
+    local function uptime(text)
+        local d, h, m, s = text:match("^%s*(%d+):(%d+):(%d+):(%d+)%s*$")
+        if not d then return math.huge end
+        d, h, m, s = tonumber(d), tonumber(h), tonumber(m), tonumber(s)
+        if h >= 24 or m >= 60 or s >= 60 then return math.huge end
+        return d * 86400 + h * 3600 + m * 60 + s
+    end
+
+    local function readRow(row, servers)
+        if row.Parent ~= servers or not row:IsA("GuiObject") or not row.Visible then
+            return nil
+        end
+        local risks = row:FindFirstChild("Risks")
+        local play = row:FindFirstChild("Play")
+        if not risks or not play or not play:IsA("GuiButton") or not play.Visible then
+            return nil
+        end
+        for day = 1, 3 do
+            local risk = textOf(risks:FindFirstChild("day" .. day)):upper()
+            risk = risk:gsub("DAY%s*%d+", ""):gsub("%s", "")
+            if risk ~= "HIGH" then return nil end
+        end
+        local current, maximum = textOf(row:FindFirstChild("PlayerCount"))
+            :match("^%s*(%d+)%s*/%s*(%d+)%s*$")
+        current, maximum = tonumber(current), tonumber(maximum)
+        if not current or not maximum or maximum <= 0 or current >= maximum then
+            return nil
+        end
+        local age = row:FindFirstChild("Uptime")
+        local ageText = textOf(age and age:FindFirstChild("label"))
+        return {
+            Row = row, Button = play, Id = row.Name,
+            Players = current, MaxPlayers = maximum,
+            Age = uptime(ageText), AgeText = ageText,
+        }
+    end
+
+    local function cancelWorker()
+        local worker = finder.Worker
+        finder.Worker = nil
+        if worker and worker ~= coroutine.running() and coroutine.status(worker) ~= "dead" then
+            pcall(task.cancel, worker)
+        end
+    end
+
+    function api.StopFinder()
+        finder.Active = false
+        finder.Epoch += 1
+        finder.Pending = nil
+        cancelWorker()
+        if alive then
+            finderButton.Text = "Find HIGH / HIGH / HIGH"
+            finderButton.BackgroundColor3 = Color3.fromRGB(36, 43, 55)
+            message("Server search stopped", 6)
+        end
+    end
+
+    function api.ToggleFinder(input)
+        if finder.Active then api.StopFinder() return end
+        if not alive then return end
+        if type(getconnections) ~= "function" then
+            message("Auto-join needs getconnections support", 12)
+            return
+        end
+        finder.Epoch += 1
+        finder.Active, finder.NextScan = true, 0
+        finder.Input = input
+        finder.Cooldowns = {}
+        finderButton.Text = "Stop searching / retries"
+        finderButton.BackgroundColor3 = Color3.fromRGB(25, 80, 90)
+        message("Looking for HIGH / HIGH / HIGH\nPrefers newer servers with spare slots")
+    end
+
+    local function failed(pending, reason)
+        if not finder.Active or finder.Pending ~= pending then return end
+        finder.Cooldowns[pending.Id] = os.clock() + RETRY_SECONDS
+        finder.Pending = nil
+        finder.NextScan = os.clock() + SCAN_SECONDS
+        cancelWorker()
+        message("Join failed; searching again\n" .. tostring(reason):sub(1, 80))
+    end
+
+    -- Use one event only; firing Click AND Activated could request two joins.
+    local function callbacks(play)
+        for index, signal in ipairs({play.MouseButton1Click, play.Activated}) do
+            local ok, listeners = pcall(getconnections, signal)
+            if ok and type(listeners) == "table" then
+                local result = {}
+                for _, listener in ipairs(listeners) do
+                    local readable, callback = pcall(function()
+                        if listener.Enabled ~= false then return listener.Function end
+                    end)
+                    if readable and type(callback) == "function" then
+                        table.insert(result, callback)
+                    end
+                end
+                if #result > 0 then return result, index == 2 end
+            end
+        end
+        return nil
+    end
+
+    local function join(candidate)
+        local pending = {Id = candidate.Id, Time = os.clock(), Started = false}
+        local epoch = finder.Epoch
+        finder.Pending = pending
+        message("Joining " .. candidate.Id .. " | HIGH / HIGH / HIGH\n"
+            .. candidate.Players .. "/" .. candidate.MaxPlayers .. " players")
+        finder.Worker = task.defer(function()
+            if not alive or not finder.Active or finder.Epoch ~= epoch then return end
+            local handlers, activated = callbacks(candidate.Button)
+            -- The browser can refresh, fill up or change risk while we select it.
+            local servers = browser()
+            local fresh = servers and readRow(candidate.Row, servers)
+            if not fresh or fresh.Id ~= pending.Id then
+                failed(pending, "Server entry changed")
+                return
+            end
+            if not handlers then
+                failed(pending, "No readable Play-button handler")
+                return
+            end
+            for _, callback in ipairs(handlers) do
+                if not alive or not finder.Active or finder.Epoch ~= epoch
+                    or finder.Pending ~= pending then return end
+                local ok, err
+                if activated then
+                    ok, err = pcall(callback, finder.Input, 1)
+                else
+                    ok, err = pcall(callback)
+                end
+                if not ok then
+                    if not pending.Started then failed(pending, err) end
+                    return
+                end
+            end
+            if finder.Epoch == epoch then finder.Worker = nil end
+        end)
+    end
+
+    listen(Teleport.TeleportInitFailed, function(who, result)
+        if who == player and finder.Pending then
+            failed(finder.Pending, result)
+        end
+    end)
+    listen(player.OnTeleport, function(state)
+        local pending = finder.Pending
+        if not finder.Active or not pending then return end
+        if state == Enum.TeleportState.Failed then
+            failed(pending, "Teleport failed")
+        else
+            pending.Started = true
+            message("Teleporting to " .. pending.Id .. "\nHIGH / HIGH / HIGH")
+        end
+    end)
+
+    local function step()
+        if not alive or not finder.Active then return end
+        local now = os.clock()
+        if finder.Pending then
+            -- Once teleporting starts, only an explicit failure permits another join.
+            if not finder.Pending.Started and now - finder.Pending.Time >= JOIN_TIMEOUT then
+                api.StopFinder()
+                message("No join response; search stopped\nPress Find to try again", 12)
+            end
+            return
+        end
+        if now < finder.NextScan then return end
+        finder.NextScan = now + SCAN_SECONDS
+        local servers = browser()
+        if not servers then
+            message("Open Twisted's main-menu server list\nFinder is waiting")
+            return
+        end
+        for id, untilTime in pairs(finder.Cooldowns) do
+            if now >= untilTime then finder.Cooldowns[id] = nil end
+        end
+        local matches, total = {}, 0
+        for _, row in ipairs(servers:GetChildren()) do
+            if row:FindFirstChild("Risks") then total += 1 end
+            local candidate = readRow(row, servers)
+            if candidate and not finder.Cooldowns[candidate.Id] then
+                table.insert(matches, candidate)
+            end
+        end
+        table.sort(matches, function(a, b)
+            if a.Age ~= b.Age then return a.Age < b.Age end
+            local freeA, freeB = a.MaxPlayers - a.Players, b.MaxPlayers - b.Players
+            if freeA ~= freeB then return freeA > freeB end
+            return a.Id < b.Id
+        end)
+        if matches[1] then
+            join(matches[1])
+        else
+            message("No available triple-HIGH match in " .. total .. " listed servers\n"
+                .. "Rechecking the browser every " .. SCAN_SECONDS .. "s")
+        end
+    end
+
+    listen(Run.Heartbeat, function()
+        local ok, err = pcall(step)
+        if not ok then
+            api.StopFinder()
+            message("Server finder error; see console", 12)
+            warn("[SmithTwisted Finder] " .. tostring(err))
+        end
+    end)
+end
+
+print("[SmithTwisted] V3.4 loaded. Features start OFF; server finder is ready.")
